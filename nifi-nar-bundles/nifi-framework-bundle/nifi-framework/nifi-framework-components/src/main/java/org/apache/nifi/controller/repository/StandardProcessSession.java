@@ -342,7 +342,7 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
                     dropEvent = provenanceReporter.generateDropEvent(record.getCurrent(), "Auto-Terminated by " + relationship.getName() + " Relationship");
                     autoTerminatedEvents.add(dropEvent);
                 } catch (final Exception e) {
-                    LOG.warn("Unable to generate Provenance Event for {} on behalf of {} due to {}", record.getCurrent(), connectableDescription, e);
+                    LOG.warn("Unable to generate Provenance Event for {} on behalf of {}", record.getCurrent(), connectableDescription, e);
                     if (LOG.isDebugEnabled()) {
                         LOG.warn("", e);
                     }
@@ -425,12 +425,14 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
 
         // Account for any statistics that have been added to for FlowFiles/Bytes In/Out
         final Relationship relationship = record.getTransferRelationship();
-        final int numDestinations = context.getConnections(relationship).size();
-        final int multiplier = Math.max(1, numDestinations);
-        final boolean autoTerminated = connectable.isAutoTerminated(relationship);
-        if (!autoTerminated) {
-            flowFilesOut-= multiplier;
-            contentSizeOut -= record.getCurrent().getSize() * multiplier;
+        if (relationship != null) {
+            final int numDestinations = context.getConnections(relationship).size();
+            final int multiplier = Math.max(1, numDestinations);
+            final boolean autoTerminated = connectable.isAutoTerminated(relationship);
+            if (!autoTerminated) {
+                flowFilesOut -= multiplier;
+                contentSizeOut -= record.getCurrent().getSize() * multiplier;
+            }
         }
 
         final FlowFileRecord original = record.getOriginal();
@@ -555,10 +557,6 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
     private synchronized void commit(final boolean asynchronous) {
         checkpoint(this.checkpoint != null); // If a checkpoint already exists, we need to copy the collection
         commit(this.checkpoint, asynchronous);
-
-        acknowledgeRecords();
-        resetState();
-
         this.checkpoint = null;
     }
 
@@ -688,38 +686,41 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
             // Update local state
             final StateManager stateManager = context.getStateManager();
             if (checkpoint.localState != null) {
-                final StateMap stateMap = stateManager.getState(Scope.LOCAL);
-                if (stateMap.getVersion() < checkpoint.localState.getVersion()) {
-                    LOG.debug("Updating State Manager's Local State");
-
-                    try {
+                try {
+                    final StateMap stateMap = stateManager.getState(Scope.LOCAL);
+                    if (stateMap.getVersion() < checkpoint.localState.getVersion()) {
+                        LOG.debug("Updating State Manager's Local State");
                         stateManager.setState(checkpoint.localState.toMap(), Scope.LOCAL);
-                    } catch (final Exception e) {
-                        LOG.warn("Failed to update Local State for {}. If NiFi is restarted before the state is able to be updated, it could result in data duplication.", connectableDescription, e);
+                    } else {
+                        LOG.debug("Will not update State Manager's Local State because the State Manager reports the latest version as {}, which is newer than the session's known version of {}.",
+                            stateMap.getVersion(), checkpoint.localState.getVersion());
                     }
-                } else {
-                    LOG.debug("Will not update State Manager's Local State because the State Manager reports the latest version as {}, which is newer than the session's known version of {}.",
-                        stateMap.getVersion(), checkpoint.localState.getVersion());
+                } catch (final Exception e) {
+                    LOG.warn("Failed to update Local State for {}. If NiFi is restarted before the state is able to be updated, it could result in data duplication.", connectableDescription, e);
                 }
             }
 
             // Update cluster state
             if (checkpoint.clusterState != null) {
-                final StateMap stateMap = stateManager.getState(Scope.CLUSTER);
-                if (stateMap.getVersion() < checkpoint.clusterState.getVersion()) {
-                    LOG.debug("Updating State Manager's Cluster State");
-
-                    try {
+                try {
+                    final StateMap stateMap = stateManager.getState(Scope.CLUSTER);
+                    if (stateMap.getVersion() < checkpoint.clusterState.getVersion()) {
+                        LOG.debug("Updating State Manager's Cluster State");
                         stateManager.setState(checkpoint.clusterState.toMap(), Scope.CLUSTER);
-                    } catch (final Exception e) {
-                        LOG.warn("Failed to update Cluster State for {}. If NiFi is restarted before the state is able to be updated, it could result in data duplication.", connectableDescription, e);
+                    } else {
+                        LOG.debug("Will not update State Manager's Cluster State because the State Manager reports the latest version as {}, which is newer than the session's known version of {}.",
+                            stateMap.getVersion(), checkpoint.clusterState.getVersion());
                     }
-                } else {
-                    LOG.debug("Will not update State Manager's Cluster State because the State Manager reports the latest version as {}, which is newer than the session's known version of {}.",
-                        stateMap.getVersion(), checkpoint.clusterState.getVersion());
+                } catch (final Exception e) {
+                    LOG.warn("Failed to update Cluster State for {}. If NiFi is restarted before the state is able to be updated, it could result in data duplication.", connectableDescription, e);
                 }
             }
 
+            // Acknowledge records in order to update counts for incoming connections' queues
+            acknowledgeRecords();
+
+            // Reset the internal state, now that the session has been committed
+            resetState();
         } catch (final Exception e) {
             LOG.error("Failed to commit session {}. Will roll back.", this, e);
 
@@ -1580,10 +1581,8 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
                 final StandardRepositoryRecord repoRecord = this.records.remove(flowFileId);
                 newOwner.records.put(flowFileId, repoRecord);
 
-                final Collection<Long> linkedIds = this.flowFileLinkage.remove(flowFileId);
-                if (linkedIds != null) {
-                    linkedIds.forEach(linkedId -> newOwner.flowFileLinkage.addLink(flowFileId, linkedId));
-                }
+                final Collection<Long> linkedIds = this.flowFileLinkage.getLinkedIds(flowFileId);
+                linkedIds.forEach(linkedId -> newOwner.flowFileLinkage.addLink(flowFileId, linkedId));
 
                 // Adjust the counts for Connections for each FlowFile that was pulled from a Connection.
                 // We do not have to worry about accounting for 'input counts' on connections because those
@@ -2454,8 +2453,6 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
             removedBytes += flowFile.getSize();
             provenanceReporter.drop(flowFile, flowFile.getAttribute(CoreAttributes.DISCARD_REASON.key()));
         }
-
-        flowFileLinkage.remove(flowFile.getId());
     }
 
     @Override
@@ -2478,8 +2475,6 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
                 removedBytes += flowFile.getSize();
                 provenanceReporter.drop(flowFile, flowFile.getAttribute(CoreAttributes.DISCARD_REASON.key()));
             }
-
-            flowFileLinkage.remove(flowFile.getId());
         }
     }
 
@@ -2988,7 +2983,8 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
             ensureNotAppending(newClaim);
 
             final OutputStream rawStream = claimCache.write(newClaim);
-            final OutputStream disableOnClose = new DisableOnCloseOutputStream(rawStream);
+            final OutputStream nonFlushable = new NonFlushableOutputStream(rawStream);
+            final OutputStream disableOnClose = new DisableOnCloseOutputStream(nonFlushable);
             final ByteCountingOutputStream countingOut = new ByteCountingOutputStream(disableOnClose);
 
             final FlowFile sourceFlowFile = source;
@@ -3124,7 +3120,8 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
 
             ensureNotAppending(newClaim);
             try (final OutputStream stream = claimCache.write(newClaim);
-                final OutputStream disableOnClose = new DisableOnCloseOutputStream(stream);
+                final NonFlushableOutputStream nonFlushableOutputStream = new NonFlushableOutputStream(stream);
+                final OutputStream disableOnClose = new DisableOnCloseOutputStream(nonFlushableOutputStream);
                 final ByteCountingOutputStream countingOut = new ByteCountingOutputStream(disableOnClose)) {
                 try {
                     writeRecursionSet.add(source);
@@ -3416,7 +3413,8 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
                 final InputStream disableOnCloseIn = new DisableOnCloseInputStream(limitedIn);
                 final ByteCountingInputStream countingIn = new ByteCountingInputStream(disableOnCloseIn, bytesRead);
                 final OutputStream os = claimCache.write(newClaim);
-                final OutputStream disableOnCloseOut = new DisableOnCloseOutputStream(os);
+                final OutputStream nonFlushableOut = new NonFlushableOutputStream(os);
+                final OutputStream disableOnCloseOut = new DisableOnCloseOutputStream(nonFlushableOut);
                 final ByteCountingOutputStream countingOut = new ByteCountingOutputStream(disableOnCloseOut)) {
 
                 writeRecursionSet.add(source);
@@ -4129,23 +4127,14 @@ public class StandardProcessSession implements ProcessSession, ProvenanceEventEn
 
                 for (final Long linkedId : linked) {
                     final List<Long> onceRemoved = linkedIds.get(linkedId);
-                    allLinked.addAll(onceRemoved);
+                    if (onceRemoved != null) {
+                        allLinked.addAll(onceRemoved);
+                    }
                 }
             }
             return allLinked;
         }
 
-        public Collection<Long> remove(final long id) {
-            final List<Long> linked = linkedIds.remove(id);
-
-            if (linked != null) {
-                for (final Long otherId : linked) {
-                    linkedIds.get(otherId).remove(id);
-                }
-            }
-
-            return linked;
-        }
 
         public void clear() {
             linkedIds.clear();

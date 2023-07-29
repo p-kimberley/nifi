@@ -354,6 +354,16 @@ public final class SnippetUtils {
                 });
         }
 
+        // include services referenced by processor group but not by any processors
+        for (ControllerServiceNode csNode : group.getControllerServices(false)) {
+            if (csNode != null) {
+                ControllerServiceDTO serviceDto = dtoFactory.createControllerServiceDto(csNode);
+                if (allServicesReferenced.add(serviceDto)) {
+                    contents.getControllerServices().add(serviceDto);
+                }
+            }
+        }
+
         // Map child process group ID to the child process group for easy lookup
         final Map<String, ProcessGroupDTO> childGroupMap = contents.getProcessGroups().stream()
             .collect(Collectors.toMap(ComponentDTO::getId, childGroupDto -> childGroupDto));
@@ -449,6 +459,28 @@ public final class SnippetUtils {
                     groupDTO.setName(groupName);
                 }
                 groupNames.add(groupDTO.getName());
+            }
+        }
+
+        // get a list of all log file suffix
+        final List<String> existingLogFileSuffixes = new ArrayList<>();
+        for (final ProcessGroup processGroup : group.getProcessGroups()) {
+            if (processGroup.getLogFileSuffix() != null) {
+                existingLogFileSuffixes.add(processGroup.getLogFileSuffix());
+            }
+        }
+
+        // rename log file suffixes
+        if (snippetContents.getProcessGroups() != null) {
+            for (final ProcessGroupDTO processGroupDTO : snippetContents.getProcessGroups()) {
+                String logFileSuffix = processGroupDTO.getLogFileSuffix();
+                if (logFileSuffix != null && !logFileSuffix.trim().isEmpty()) {
+                    while (existingLogFileSuffixes.contains(logFileSuffix)) {
+                        logFileSuffix = "Copy_of_" + logFileSuffix;
+                    }
+                    processGroupDTO.setLogFileSuffix(logFileSuffix);
+                    existingLogFileSuffixes.add(processGroupDTO.getLogFileSuffix());
+                }
             }
         }
     }

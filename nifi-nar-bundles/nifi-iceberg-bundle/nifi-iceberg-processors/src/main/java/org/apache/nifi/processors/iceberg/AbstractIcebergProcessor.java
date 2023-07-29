@@ -18,14 +18,18 @@
 package org.apache.nifi.processors.iceberg;
 
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.nifi.annotation.behavior.RequiresInstanceClassLoading;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnStopped;
+import org.apache.nifi.components.ClassloaderIsolationKeyProvider;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.context.PropertyContext;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.kerberos.KerberosUserService;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
+import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.security.krb.KerberosLoginException;
 import org.apache.nifi.security.krb.KerberosUser;
@@ -35,14 +39,15 @@ import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
 
 import static org.apache.nifi.hadoop.SecurityUtil.getUgiForKerberosUser;
-import static org.apache.nifi.processors.iceberg.PutIceberg.REL_FAILURE;
+import static org.apache.nifi.processors.iceberg.IcebergUtils.getConfigurationFromFiles;
 
 /**
  * Base Iceberg processor class.
  */
-public abstract class AbstractIcebergProcessor extends AbstractProcessor {
+@RequiresInstanceClassLoading(cloneAncestorResources = true)
+public abstract class AbstractIcebergProcessor extends AbstractProcessor implements ClassloaderIsolationKeyProvider {
 
-    static final PropertyDescriptor CATALOG = new PropertyDescriptor.Builder()
+    public static final PropertyDescriptor CATALOG = new PropertyDescriptor.Builder()
             .name("catalog-service")
             .displayName("Catalog Service")
             .description("Specifies the Controller Service to use for handling references to table’s metadata files.")
@@ -50,25 +55,30 @@ public abstract class AbstractIcebergProcessor extends AbstractProcessor {
             .required(true)
             .build();
 
-    static final PropertyDescriptor KERBEROS_USER_SERVICE = new PropertyDescriptor.Builder()
+    public static final PropertyDescriptor KERBEROS_USER_SERVICE = new PropertyDescriptor.Builder()
             .name("kerberos-user-service")
             .displayName("Kerberos User Service")
             .description("Specifies the Kerberos User Controller Service that should be used for authenticating with Kerberos.")
             .identifiesControllerService(KerberosUserService.class)
             .build();
 
+    public static final Relationship REL_FAILURE = new Relationship.Builder()
+            .name("failure")
+            .description("A FlowFile is routed to this relationship if the operation failed and retrying the operation will also fail, such as an invalid data or schema.")
+            .build();
+
     private volatile KerberosUser kerberosUser;
     private volatile UserGroupInformation ugi;
 
     @OnScheduled
-    public final void onScheduled(final ProcessContext context) {
+    public void onScheduled(final ProcessContext context) {
         final IcebergCatalogService catalogService = context.getProperty(CATALOG).asControllerService(IcebergCatalogService.class);
         final KerberosUserService kerberosUserService = context.getProperty(KERBEROS_USER_SERVICE).asControllerService(KerberosUserService.class);
 
         if (kerberosUserService != null) {
             this.kerberosUser = kerberosUserService.createKerberosUser();
             try {
-                this.ugi = getUgiForKerberosUser(catalogService.getConfiguration(), kerberosUser);
+                this.ugi = getUgiForKerberosUser(getConfigurationFromFiles(catalogService.getConfigFilePaths()), kerberosUser);
             } catch (IOException e) {
                 throw new ProcessException("Kerberos Authentication failed", e);
             }
@@ -76,7 +86,7 @@ public abstract class AbstractIcebergProcessor extends AbstractProcessor {
     }
 
     @OnStopped
-    public final void onStopped() {
+    public void onStopped() {
         if (kerberosUser != null) {
             try {
                 kerberosUser.logout();
@@ -107,9 +117,18 @@ public abstract class AbstractIcebergProcessor extends AbstractProcessor {
 
             } catch (Exception e) {
                 getLogger().error("Privileged action failed with kerberos user " + kerberosUser, e);
-                session.transfer(flowFile, REL_FAILURE);
+                session.transfer(session.penalize(flowFile), REL_FAILURE);
             }
         }
+    }
+
+    @Override
+    public String getClassloaderIsolationKey(PropertyContext context) {
+        final KerberosUserService kerberosUserService = context.getProperty(KERBEROS_USER_SERVICE).asControllerService(KerberosUserService.class);
+        if (kerberosUserService != null) {
+            return kerberosUserService.getIdentifier();
+        }
+        return null;
     }
 
     private UserGroupInformation getUgi() {

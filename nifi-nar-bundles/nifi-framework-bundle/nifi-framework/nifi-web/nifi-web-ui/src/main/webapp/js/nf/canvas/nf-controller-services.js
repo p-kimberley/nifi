@@ -541,9 +541,9 @@
         }).done(function (response) {
             var id = 0;
             var tags = [];
-            var groups = d3.set();
-            var restrictedUsage = d3.map();
-            var requiredPermissions = d3.map();
+            var groups = new Set();
+            var restrictedUsage = new Map();
+            var requiredPermissions = new Map();
 
             // begin the update
             controllerServiceTypesData.beginUpdate();
@@ -638,7 +638,7 @@
                 text: 'all groups',
                 value: ''
             }];
-            groups.each(function (group) {
+            groups.forEach(function (group) {
                 options.push({
                     text: group,
                     value: group
@@ -868,8 +868,13 @@
             // always include a button to view the usage
             var markup = '<div title="Usage" class="pointer controller-service-usage fa fa-book"></div>';
 
+            var hasComments = !nfCommon.isBlank(dataContext.component.comments);
             var hasErrors = !nfCommon.isEmpty(dataContext.component.validationErrors);
             var hasBulletins = !nfCommon.isEmpty(dataContext.bulletins);
+
+            if (hasComments) {
+            	markup += '<div class="pointer has-comments fa fa-comment"></div>';
+            }
 
             if (hasErrors) {
                 markup += '<div class="pointer has-errors fa fa-warning"></div>';
@@ -879,7 +884,7 @@
                 markup += '<div class="has-bulletins fa fa-sticky-note-o"></div>';
             }
 
-            if (hasErrors || hasBulletins) {
+            if (hasComments || hasErrors || hasBulletins) {
                 markup += '<span class="hidden row-id">' + nfCommon.escapeHtml(dataContext.id) + '</span>';
             }
 
@@ -1157,6 +1162,36 @@
 
         // hold onto an instance of the grid
         serviceTable.data('gridInstance', controllerServicesGrid).on('mouseenter', 'div.slick-cell', function (e) {
+            var commentsIcon = $(this).find('div.has-comments');
+            if (commentsIcon.length && !commentsIcon.data('qtip')) {
+                var serviceId = $(this).find('span.row-id').text();
+
+                // get the service item
+                var controllerServiceEntity = controllerServicesData.getItemById(serviceId);
+
+                // format the tooltip
+                var comments = nfCommon.escapeHtml(controllerServiceEntity.component.comments);
+                var tooltip = nfCommon.formatNewLines(comments);
+
+                // show the tooltip
+                if (nfCommon.isDefinedAndNotNull(tooltip)) {
+                    commentsIcon.qtip($.extend({},
+                        nfCommon.config.tooltipConfig,
+                        {
+                            content: tooltip,
+                            position: {
+                                target: 'mouse',
+                                viewport: $('#shell-container'),
+                                adjust: {
+                                    x: 8,
+                                    y: 8,
+                                    method: 'flipinvert flipinvert'
+                                }
+                            }
+                        }));
+                }
+            }
+
             var errorIcon = $(this).find('div.has-errors');
             if (errorIcon.length && !errorIcon.data('qtip')) {
                 var serviceId = $(this).find('span.row-id').text();
@@ -1241,6 +1276,7 @@
                 }, service));
             });
 
+            nfCommon.cleanUpTooltips(serviceTable, 'div.has-comments');
             nfCommon.cleanUpTooltips(serviceTable, 'div.has-errors');
             nfCommon.cleanUpTooltips(serviceTable, 'div.has-bulletins');
 
@@ -1416,11 +1452,9 @@
 
             // if there are some bulletins process them
             if (!nfCommon.isEmpty(controllerServiceBulletins)) {
-                var controllerServiceBulletinsBySource = d3.nest()
-                    .key(function(d) { return d.sourceId; })
-                    .map(controllerServiceBulletins, d3.map);
+                var controllerServiceBulletinsBySource = new Map(controllerServiceBulletins.map(function(d) { return [d.sourceId, d]; }));
 
-                controllerServiceBulletinsBySource.each(function(sourceBulletins, sourceId) {
+                controllerServiceBulletinsBySource.forEach(function(sourceBulletins, sourceId) {
                     var controllerService = controllerServicesData.getItemById(sourceId);
                     if (nfCommon.isDefinedAndNotNull(controllerService)) {
                         controllerServicesData.updateItem(sourceId, $.extend(controllerService, {

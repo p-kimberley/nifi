@@ -22,21 +22,30 @@ import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.ReadsAttribute;
 import org.apache.nifi.annotation.behavior.ReadsAttributes;
+import org.apache.nifi.annotation.behavior.Restricted;
+import org.apache.nifi.annotation.behavior.Restriction;
 import org.apache.nifi.annotation.behavior.SystemResource;
 import org.apache.nifi.annotation.behavior.SystemResourceConsideration;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.RequiredPermission;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.jms.cf.JMSConnectionFactoryProvider;
+import org.apache.nifi.jms.processors.ioconcept.reader.FlowFileReader;
+import org.apache.nifi.jms.processors.ioconcept.reader.FlowFileReaderCallback;
+import org.apache.nifi.jms.processors.ioconcept.reader.StateTrackingFlowFileReader;
+import org.apache.nifi.jms.processors.ioconcept.reader.record.RecordSupplier;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.Processor;
 import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.serialization.RecordReaderFactory;
+import org.apache.nifi.serialization.RecordSetWriterFactory;
 import org.apache.nifi.stream.io.StreamUtils;
 import org.springframework.jms.connection.CachingConnectionFactory;
 import org.springframework.jms.core.JmsTemplate;
@@ -54,6 +63,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import static org.apache.nifi.jms.processors.ioconcept.reader.record.ProvenanceEventTemplates.PROVENANCE_EVENT_DETAILS_ON_RECORDSET_FAILURE;
+import static org.apache.nifi.jms.processors.ioconcept.reader.record.ProvenanceEventTemplates.PROVENANCE_EVENT_DETAILS_ON_RECORDSET_RECOVER;
+import static org.apache.nifi.jms.processors.ioconcept.reader.record.ProvenanceEventTemplates.PROVENANCE_EVENT_DETAILS_ON_RECORDSET_SUCCESS;
 
 /**
  * An implementation of JMS Message publishing {@link Processor} which upon each
@@ -92,6 +105,14 @@ import java.util.regex.Pattern;
         expressionLanguageScope = ExpressionLanguageScope.VARIABLE_REGISTRY)
 @SeeAlso(value = { ConsumeJMS.class, JMSConnectionFactoryProvider.class })
 @SystemResourceConsideration(resource = SystemResource.MEMORY)
+@Restricted(
+        restrictions = {
+                @Restriction(
+                        requiredPermission = RequiredPermission.REFERENCE_REMOTE_RESOURCES,
+                        explanation = "Client Library Location can reference resources over HTTP"
+                )
+        }
+)
 public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
 
     static final PropertyDescriptor MESSAGE_BODY = new PropertyDescriptor.Builder()
@@ -120,6 +141,16 @@ public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
             .addValidator(StandardValidators.REGULAR_EXPRESSION_VALIDATOR)
             .defaultValue(".*")
             .required(true)
+            .build();
+
+    static final PropertyDescriptor RECORD_READER = new PropertyDescriptor.Builder()
+            .fromPropertyDescriptor(BASE_RECORD_READER)
+            .description("The Record Reader to use for parsing the incoming FlowFile into Records.")
+            .build();
+
+    static final PropertyDescriptor RECORD_WRITER = new PropertyDescriptor.Builder()
+            .fromPropertyDescriptor(BASE_RECORD_WRITER)
+            .description("The Record Writer to use for serializing Records before publishing them as an JMS Message.")
             .build();
 
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
@@ -154,11 +185,13 @@ public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
         _propertyDescriptors.add(ALLOW_ILLEGAL_HEADER_CHARS);
         _propertyDescriptors.add(ATTRIBUTES_AS_HEADERS_REGEX);
 
+        _propertyDescriptors.add(RECORD_READER);
+        _propertyDescriptors.add(RECORD_WRITER);
+
         _propertyDescriptors.addAll(JNDI_JMS_CF_PROPERTIES);
         _propertyDescriptors.addAll(JMS_CF_PROPERTIES);
 
         propertyDescriptors = Collections.unmodifiableList(_propertyDescriptors);
-
 
         Set<Relationship> _relationships = new HashSet<>();
         _relationships.add(REL_SUCCESS);
@@ -173,7 +206,7 @@ public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
      * as JMS headers on the newly constructed message. For the list of
      * available message headers please see {@link JmsHeaders}. <br>
      * <br>
-     * Upon success the incoming {@link FlowFile} is transferred to the'success'
+     * Upon success the incoming {@link FlowFile} is transferred to the 'success'
      * {@link Relationship} and upon failure FlowFile is penalized and
      * transferred to the 'failure' {@link Relationship}
      */
@@ -182,12 +215,12 @@ public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
         FlowFile flowFile = processSession.get();
         if (flowFile != null) {
             try {
-                String destinationName = context.getProperty(DESTINATION).evaluateAttributeExpressions(flowFile).getValue();
-                String charset = context.getProperty(CHARSET).evaluateAttributeExpressions(flowFile).getValue();
-                Boolean allowIllegalChars = context.getProperty(ALLOW_ILLEGAL_HEADER_CHARS).asBoolean();
-                String attributeHeaderRegex = context.getProperty(ATTRIBUTES_AS_HEADERS_REGEX).getValue();
+                final String destinationName = context.getProperty(DESTINATION).evaluateAttributeExpressions(flowFile).getValue();
+                final String charset = context.getProperty(CHARSET).evaluateAttributeExpressions(flowFile).getValue();
+                final Boolean allowIllegalChars = context.getProperty(ALLOW_ILLEGAL_HEADER_CHARS).asBoolean();
+                final String attributeHeaderRegex = context.getProperty(ATTRIBUTES_AS_HEADERS_REGEX).getValue();
 
-                Map<String,String> attributesToSend = new HashMap<>();
+                final Map<String,String> attributesToSend = new HashMap<>();
                 // REGEX Attributes
                 final Pattern pattern = Pattern.compile(attributeHeaderRegex);
                 for (final Map.Entry<String, String> entry : flowFile.getAttributes().entrySet()) {
@@ -199,34 +232,61 @@ public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
                     }
                 }
 
-                switch (context.getProperty(MESSAGE_BODY).getValue()) {
-                    case TEXT_MESSAGE:
-                        try {
-                            publisher.publish(destinationName, this.extractTextMessageBody(flowFile, processSession, charset), attributesToSend);
-                        } catch(Exception e) {
-                            publisher.setValid(false);
-                            throw e;
-                        }
-                        break;
-                    case BYTES_MESSAGE:
-                    default:
-                        try {
-                            publisher.publish(destinationName, this.extractMessageBody(flowFile, processSession), attributesToSend);
-                        } catch(Exception e) {
-                            publisher.setValid(false);
-                            throw e;
-                        }
-                        break;
+                if (context.getProperty(RECORD_READER).isSet()) {
+                    final RecordReaderFactory readerFactory = context.getProperty(RECORD_READER).asControllerService(RecordReaderFactory.class);
+                    final RecordSetWriterFactory writerFactory = context.getProperty(RECORD_WRITER).asControllerService(RecordSetWriterFactory.class);
+
+                    final FlowFileReader flowFileReader = new StateTrackingFlowFileReader(
+                            getIdentifier(),
+                            new RecordSupplier(readerFactory, writerFactory),
+                            getLogger()
+                    );
+
+                    flowFileReader.read(
+                            processSession,
+                            flowFile,
+                            content -> publisher.publish(destinationName, content, attributesToSend),
+                            new FlowFileReaderCallback() {
+                                @Override
+                                public void onSuccess(FlowFile flowFile, int processedRecords, boolean isRecover, long transmissionMillis) {
+                                    final String eventTemplate = isRecover ? PROVENANCE_EVENT_DETAILS_ON_RECORDSET_RECOVER : PROVENANCE_EVENT_DETAILS_ON_RECORDSET_SUCCESS;
+                                    processSession.getProvenanceReporter().send(
+                                            flowFile,
+                                            destinationName,
+                                            String.format(eventTemplate, processedRecords),
+                                            transmissionMillis);
+
+                                    processSession.transfer(flowFile, REL_SUCCESS);
+                                }
+
+                                @Override
+                                public void onFailure(FlowFile flowFile, int processedRecords, long transmissionMillis, Exception e) {
+                                    processSession.getProvenanceReporter().send(
+                                            flowFile,
+                                            destinationName,
+                                            String.format(PROVENANCE_EVENT_DETAILS_ON_RECORDSET_FAILURE, processedRecords),
+                                            transmissionMillis);
+
+                                    handleException(context, processSession, publisher, flowFile, e);
+                                }
+                            }
+                    );
+                } else {
+                    processStandardFlowFile(context, processSession, publisher, flowFile, destinationName, charset, attributesToSend);
+                    processSession.transfer(flowFile, REL_SUCCESS);
+                    processSession.getProvenanceReporter().send(flowFile, destinationName);
                 }
-                processSession.transfer(flowFile, REL_SUCCESS);
-                processSession.getProvenanceReporter().send(flowFile, destinationName);
             } catch (Exception e) {
-                processSession.transfer(flowFile, REL_FAILURE);
-                this.getLogger().error("Failed while sending message to JMS via " + publisher, e);
-                context.yield();
-                publisher.setValid(false);
+                handleException(context, processSession, publisher, flowFile, e);
             }
         }
+    }
+
+    private void handleException(ProcessContext context, ProcessSession processSession, JMSPublisher publisher, FlowFile flowFile, Exception e) {
+        processSession.transfer(flowFile, REL_FAILURE);
+        this.getLogger().error("Failed while sending message to JMS via " + publisher, e);
+        context.yield();
+        publisher.setValid(false);
     }
 
     @Override
@@ -250,6 +310,34 @@ public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
         return new JMSPublisher(connectionFactory, jmsTemplate, this.getLogger());
     }
 
+    private void processStandardFlowFile(ProcessContext context, ProcessSession processSession, JMSPublisher publisher, FlowFile flowFile,
+                                         String destinationName, String charset, Map<String,String> attributesToSend) {
+        publishMessage(context, processSession, publisher, flowFile, destinationName, charset, attributesToSend);
+    }
+
+    private void publishMessage(ProcessContext context, ProcessSession processSession, JMSPublisher publisher, FlowFile flowFile,
+                                String destinationName, String charset, Map<String,String> attributesToSend) {
+        switch (context.getProperty(MESSAGE_BODY).getValue()) {
+            case TEXT_MESSAGE:
+                try {
+                    publisher.publish(destinationName, this.extractTextMessageBody(flowFile, processSession, charset), attributesToSend);
+                } catch(Exception e) {
+                    publisher.setValid(false);
+                    throw e;
+                }
+                break;
+            case BYTES_MESSAGE:
+            default:
+                try {
+                    publisher.publish(destinationName, this.extractMessageBody(flowFile, processSession), attributesToSend);
+                } catch(Exception e) {
+                    publisher.setValid(false);
+                    throw e;
+                }
+                break;
+        }
+    }
+
     /**
      * Extracts contents of the {@link FlowFile} as byte array.
      */
@@ -264,4 +352,5 @@ public class PublishJMS extends AbstractJMSProcessor<JMSPublisher> {
         session.read(flowFile, in -> IOUtils.copy(in, writer, Charset.forName(charset)));
         return writer.toString();
     }
+
 }

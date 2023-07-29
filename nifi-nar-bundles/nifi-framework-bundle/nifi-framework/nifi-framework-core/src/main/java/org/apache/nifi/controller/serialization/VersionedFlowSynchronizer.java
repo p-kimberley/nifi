@@ -83,6 +83,7 @@ import org.apache.nifi.registry.flow.FlowRegistryClientNode;
 import org.apache.nifi.registry.flow.diff.ComparableDataFlow;
 import org.apache.nifi.registry.flow.diff.DifferenceDescriptor;
 import org.apache.nifi.registry.flow.diff.FlowComparator;
+import org.apache.nifi.registry.flow.diff.FlowComparatorVersionedStrategy;
 import org.apache.nifi.registry.flow.diff.FlowComparison;
 import org.apache.nifi.registry.flow.diff.FlowDifference;
 import org.apache.nifi.registry.flow.diff.StandardComparableDataFlow;
@@ -203,14 +204,6 @@ public class VersionedFlowSynchronizer implements FlowSynchronizer {
             verifyNoConnectionsWithDataRemoved(existingDataFlow, proposedFlow, controller, flowComparison);
 
             synchronizeFlow(controller, existingDataFlow, proposedFlow, affectedComponents);
-
-            for (final ParameterProviderNode parameterProviderNode : flowManager.getAllParameterProviders()) {
-                try {
-                    parameterProviderNode.fetchParameters();
-                } catch (final Exception e) {
-                    logger.warn("Failed to fetch parameters for provider {}: {}", new Object[] { parameterProviderNode.getName(), e.getMessage() }, e);
-                }
-            }
         } finally {
             // We have to call toExistingSet() here because some of the components that existed in the active set may no longer exist,
             // so attempting to start them will fail.
@@ -378,6 +371,7 @@ public class VersionedFlowSynchronizer implements FlowSynchronizer {
 
             if (versionedFlow != null) {
                 controller.setMaxTimerDrivenThreadCount(versionedFlow.getMaxTimerDrivenThreadCount());
+                controller.setMaxEventDrivenThreadCount(versionedFlow.getMaxEventDrivenThreadCount());
                 ProcessGroup rootGroup = controller.getFlowManager().getRootGroup();
 
                 final Map<String, VersionedParameterContext> versionedParameterContextMap = new HashMap<>();
@@ -469,7 +463,7 @@ public class VersionedFlowSynchronizer implements FlowSynchronizer {
                 toSet(clusterVersionedFlow.getParameterContexts()), toSet(clusterVersionedFlow.getParameterProviders()), toSet(clusterVersionedFlow.getRegistries()));
 
         final FlowComparator flowComparator = new StandardFlowComparator(localDataFlow, clusterDataFlow, Collections.emptySet(),
-            differenceDescriptor, encryptor::decrypt, VersionedComponent::getInstanceIdentifier);
+            differenceDescriptor, encryptor::decrypt, VersionedComponent::getInstanceIdentifier, FlowComparatorVersionedStrategy.DEEP);
         return flowComparator.compare();
     }
 

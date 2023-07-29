@@ -176,6 +176,8 @@ The following are available commands:
  registry get-access-token
  registry get-access-token-spnego
  registry logout-access-token
+ registry export-all-flows
+ registry import-all-flows
  session keys
  session show
  session get
@@ -772,6 +774,84 @@ This command migrates nifi.properties back from AWS_KMS to AES_GCM protection sc
 -m \
 -v
 ----
+
+[export_import_all_flows]
+=== Export All Flows
+You can use the `export-all-flows` to perform the following tasks:
+
+* List all the buckets
+* For each bucket, list all flows
+* For each flow, list all versions
+* Export each version into a provided directory
+
+Running the command requires an `--outputDirectory` parameter. The directory must exist and permissions correctly set.
+
+=== Import All Flows
+You can use the `import-all-flows` to perform the following tasks:
+
+* List all files, representing a flow version, from a directory created by export-all-flows
+* Create all the corresponding buckets
+* Create all the corresponding flows
+* Import all the corresponding flow versions
+
+Running the command requires 2 parameters:
+
+* `--input` parameter represents a directory to read files from
+* `--skipExisting` optional parameter, configuring how to handle existing flow and flow version creation.
+If provided the flow and flow version creation will be skipped regardless of there are missing flow versions.
+If not provided the missing flow versions will be created.
+
+=== Usage
+The input source for an import-all-flows command must be created by an export-all-flows command.
+To avoid migration conflicts, no modification should be performed in the NiFi Registry during this activity.
+Buckets and flows with the same name are considered equal.
+
+* Export all flow versions:
+
+ ./bin/cli.sh registry export-all-flows -u http://localhost:18080 --outputDirectory "/my_dir/flow_exports"
+
+* Import all flow versions:
+
+ ./bin/cli.sh registry import-all-flows -u http://localhost:18080 --input "/my_dir/flow_exports" --skipExisting
+
+=== Expected behaviour
+=== Use case 1: reconfiguring an existing NiFi Registry
+
+NiFi is connecting to NiFi Registry, the NiFi Registry does not change, only its configuration.
+All the data will be created.
+
+1. Export versions:
+
+ ./bin/cli.sh registry export-all-flows -u http://localhost:18080 --outputDirectory "/my_dir/flow_exports"
+
+2. Stop registry
+
+3. Switch provider
+
+4. Start registry
+
+5. Import versions
+
+ ./bin/cli.sh registry import-all-flows -u http://localhost:18080 --input "/my_dir/flow_exports" --skipExisting
+
+
+=== Use case 2: data replication
+
+NiFi_1 is connecting to NiFi Registry_1 and NiFi_2 is connecting to NiFi Registry_2.
+
+For disaster recovery purposes the data from NiFi Registry_1 needs to be periodically replicated to NiFi Registry_2 via a scheduled job.
+
+The initial version of Nifi Registry_2 needs to be created by this tool.
+
+The missing buckets, flows and versions will be created. If bucket and flow exist the missing versions will be created.
+
+1. Export versions:
+
+ ./bin/cli.sh registry export-all-flows -u http://nifi-registry-1:18080 --outputDirectory "/my_dir/flow_exports"
+
+2. Import versions:
+
+ ./bin/cli.sh registry import-all-flows -u http://nifi-registry-2:18080 --input "/my_dir/flow_exports"
 
 == File Manager
 The File Manager utility (invoked as `./bin/file-manager.sh` or `bin\file-manager.bat`) allows system administrators to take a backup of an existing NiFi installation, install a new version of NiFi in a designated location (while migrating any previous configuration settings) or restore an installation from a previous backup. File Manager supports NiFi version 1.0.0 and higher.
@@ -1584,3 +1664,70 @@ NOTE: As of NiFi 1.10.x, because of an upgrade to ZooKeeper 3.5.x, the migrator 
 ** `zk-migrator.sh -s -z destinationHostname:destinationClientPort/destinationRootPath/components -k /path/to/jaasconfig/jaas-config.conf -f /path/to/export/zk-source-data.json`
 
 6. Once the migration has completed successfully, start the processors in the NiFi flow.  Processing should continue from the point at which it was stopped when the NiFi flow was stopped.
+
+[[kafka_migrator]]
+== Kafka Processor Migrator
+With NiFi version 1.15.3, Kafka processor versions 0.8, 0.9, 0.10 and 0.11 were removed.
+In large flows having many numbers of components it is challenging to replace these processors manually.
+This tool can be used to update a flow in an automated way.
+
+=== Usage
+Running the script requires 3 mandatory and 1 optional parameters:
+
+* Input file, the full path of the flow.xml.gz in which the replacement is required.
+* Output file, the full path of the file where the results should be saved.
+* Transaction, whether the new processors should be configured with or without transaction usage.
+* Optional: Kafka Brokers, a comma separated list of Kafka Brokers in <host>:<port> format.
+
+Different input and output files must be used.
+Kafka Broker argument can be omitted if flow does not contain GetKafka or PutKafka processors.
+
+1. Run script, a possible example:
+
+ ./bin/kafka-migrator.sh -i "/tmp/flow/flow.xml.gz" -o "/tmp/flow/flow_result.xml.gz" -t false -k "mykafkaserver1:1234,mykafkaserver2:1235"
+
+2. Rename flow_result.xml.gz file to flow.xml.gz, do not overwrite your input file.
+3. Copy flow.xml.gz file to all the NiFi nodes conf directory
+4. Start NiFi
+5. Verify the results.
+
+=== Expected Behaviour
+* Flow replacement:
+* For all replaced processors:
+** changing class and artifact
+** configure transaction as true
+*** 'Delivery Guarantee' property will be set to 'Replicated'
+*** if 'Honor-Transactions' and 'Use-Transactions' properties are present in the file they will be set to true
+*** if 'Honor-Transactions' and 'Use-Transactions' not present they will be translated as true in NiFi
+** configure transaction as false
+*** 'Delivery Guarantee' property will keep its original setting.
+*** 'Honor-Transactions' and 'Use-Transactions' will be set to false
+* For version 0.8 processors (when kafka broker list argument provided)
+** remove all version 0.8 properties
+** add version 2.0 properties with default value except for 'Topic Name', 'Group ID',
+'Partition', 'Kafka Key', 'Delivery Guarantee' (if transaction false) and
+'Compression Codec' values which will be copied over
+
+* Template replacement:
+* For all replaced processors:
+** changing type and artifact
+** configure transaction as true
+*** 'Delivery Guarantee' property will be set to 'Replicated'
+*** if 'Honor-Transactions' and 'Use-Transactions' properties are present in the file they will be set to true
+*** if 'Honor-Transactions' and 'Use-Transactions' not present they will be translated as true in NiFi
+** configure transaction as false
+*** 'Delivery Guarantee' property will keep its original setting.
+*** 'Honor-Transactions' and 'Use-Transactions' will be set to false
+* For version 0.8 processors (when kafka broker list argument provided)
+** remove all version 0.8 properties and descriptors
+** add version 2.0 properties with default value except for 'Topic Name', 'Group ID',
+'Partition', 'Kafka Key', 'Delivery Guarantee' (if transaction false) and
+'Compression Codec' values which will be copied over
+*** add version 2.0 descriptors
+
+=== Limitations
+* All deprecated Kafka processors will be replaced with version 2.0 processors.
+* Script will not rename the processors, only their type will be changed.
+* Transaction setting will be applied to all the replaced processors.
+* The flow.xml.gz file needs to be fit in memory and process time depends on the file size.
+* Processors in templates will be replaced as well, please download the original templates if desired.

@@ -16,25 +16,38 @@
 # under the License.
 #
 
-FROM openjdk:8-jre AS artifactbase
+FROM eclipse-temurin:11-jre AS artifactbase
 LABEL maintainer="Apache NiFi <dev@nifi.apache.org>"
+LABEL site="https://nifi.apache.org"
 
 ARG NIFI_REGISTRY_BINARY
-ARG NIFI_REGISTRY_VERSION=1.14.0
+ARG NIFI_REGISTRY_BINARY_NAME
+ARG NIFI_REGISTRY_SCRIPTS
+ARG NIFI_REGISTRY_VERSION=1.23.0
+ARG NIFI_TOOLKIT_BINARY
 
 ENV NIFI_REGISTRY_BASE_DIR /opt/nifi-registry
 ENV NIFI_REGISTRY_HOME ${NIFI_REGISTRY_BASE_DIR}/nifi-registry-current
+ENV NIFI_TOOLKIT_HOME ${NIFI_REGISTRY_BASE_DIR}/nifi-toolkit-current
 
-ADD sh/ ${NIFI_REGISTRY_BASE_DIR}/scripts/
+ADD $NIFI_REGISTRY_SCRIPTS ${NIFI_REGISTRY_BASE_DIR}/scripts/
+RUN chmod -R +x ${NIFI_REGISTRY_BASE_DIR}/scripts/*.sh \
+   && apt-get update \
+   && apt-get install -y unzip
 
 COPY $NIFI_REGISTRY_BINARY $NIFI_REGISTRY_BASE_DIR
-RUN unzip ${NIFI_REGISTRY_BASE_DIR}/nifi-registry-${NIFI_REGISTRY_VERSION}-bin.zip -d ${NIFI_REGISTRY_BASE_DIR} \
-    && rm ${NIFI_REGISTRY_BASE_DIR}/nifi-registry-${NIFI_REGISTRY_VERSION}-bin.zip \
-    && mv ${NIFI_REGISTRY_BASE_DIR}/nifi-registry-${NIFI_REGISTRY_VERSION} ${NIFI_REGISTRY_HOME} \
-    && ln -s ${NIFI_REGISTRY_HOME} ${NIFI_REGISTRY_BASE_DIR}/nifi-registry-${NIFI_REGISTRY_VERSION}
+RUN unzip ${NIFI_REGISTRY_BASE_DIR}/${NIFI_REGISTRY_BINARY_NAME} -d ${NIFI_REGISTRY_BASE_DIR} \
+    && rm ${NIFI_REGISTRY_BASE_DIR}/${NIFI_REGISTRY_BINARY_NAME} \
+    && ln -s ${NIFI_REGISTRY_BASE_DIR}/nifi-registry-${NIFI_REGISTRY_VERSION} ${NIFI_REGISTRY_HOME}
+
+COPY $NIFI_TOOLKIT_BINARY $NIFI_REGISTRY_BASE_DIR
+RUN unzip ${NIFI_REGISTRY_BASE_DIR}/nifi-toolkit-${NIFI_REGISTRY_VERSION}-bin.zip -d ${NIFI_REGISTRY_BASE_DIR} \
+    && rm ${NIFI_REGISTRY_BASE_DIR}/nifi-toolkit-${NIFI_REGISTRY_VERSION}-bin.zip \
+    && mv ${NIFI_REGISTRY_BASE_DIR}/nifi-toolkit-${NIFI_REGISTRY_VERSION} ${NIFI_TOOLKIT_HOME} \
+    && ln -s ${NIFI_TOOLKIT_HOME} ${NIFI_REGISTRY_BASE_DIR}/nifi-toolkit-${NIFI_REGISTRY_VERSION}
 
 
-FROM openjdk:8-jre
+FROM eclipse-temurin:11-jre
 LABEL maintainer="Apache NiFi Registry <dev@nifi.apache.org>"
 LABEL site="https://nifi.apache.org"
 
@@ -43,6 +56,7 @@ ARG GID=1000
 
 ENV NIFI_REGISTRY_BASE_DIR /opt/nifi-registry
 ENV NIFI_REGISTRY_HOME ${NIFI_REGISTRY_BASE_DIR}/nifi-registry-current
+ENV NIFI_TOOLKIT_HOME ${NIFI_REGISTRY_BASE_DIR}/nifi-toolkit-current
 
 COPY --chown=${UID}:${GID} --from=artifactbase $NIFI_REGISTRY_BASE_DIR $NIFI_REGISTRY_BASE_DIR
 
@@ -51,8 +65,10 @@ RUN groupadd -g ${GID} nifi || groupmod -n nifi `getent group ${GID} | cut -d: -
     && useradd --shell /bin/bash -u ${UID} -g ${GID} -m nifi \
     && chown -R nifi:nifi ${NIFI_REGISTRY_BASE_DIR} \
     && apt-get update \
-    && apt-get install -y jq xmlstarlet procps
-
+    && apt-get install -y jq xmlstarlet procps \
+    && apt-get -y autoremove \
+    && apt-get clean autoclean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 USER nifi
 

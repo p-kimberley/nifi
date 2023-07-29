@@ -87,6 +87,7 @@ import org.apache.nifi.registry.VariableDescriptor;
 import org.apache.nifi.registry.flow.FlowRegistryClientContextFactory;
 import org.apache.nifi.registry.flow.FlowRegistryClientNode;
 import org.apache.nifi.registry.flow.FlowRegistryException;
+import org.apache.nifi.registry.flow.FlowSnapshotContainer;
 import org.apache.nifi.registry.flow.RegisteredFlow;
 import org.apache.nifi.registry.flow.RegisteredFlowSnapshot;
 import org.apache.nifi.registry.flow.StandardVersionControlInformation;
@@ -96,6 +97,7 @@ import org.apache.nifi.registry.flow.VersionedFlowStatus;
 import org.apache.nifi.registry.flow.diff.ComparableDataFlow;
 import org.apache.nifi.registry.flow.diff.EvolvingDifferenceDescriptor;
 import org.apache.nifi.registry.flow.diff.FlowComparator;
+import org.apache.nifi.registry.flow.diff.FlowComparatorVersionedStrategy;
 import org.apache.nifi.registry.flow.diff.FlowComparison;
 import org.apache.nifi.registry.flow.diff.FlowDifference;
 import org.apache.nifi.registry.flow.diff.StandardComparableDataFlow;
@@ -212,6 +214,8 @@ public final class StandardProcessGroup implements ProcessGroup {
     private static final String DEFAULT_FLOWFILE_EXPIRATION = "0 sec";
     private static final long DEFAULT_BACKPRESSURE_OBJECT = 10_000L;
     private static final String DEFAULT_BACKPRESSURE_DATA_SIZE = "1 GB";
+    private static final Pattern INVALID_DIRECTORY_NAME_CHARACTERS = Pattern.compile("[\\s\\<\\>:\\'\\\"\\/\\\\\\|\\?\\*]");
+    private volatile String logFileSuffix;
 
 
     public StandardProcessGroup(final String id, final ControllerServiceProvider serviceProvider, final ProcessScheduler scheduler,
@@ -242,6 +246,7 @@ public final class StandardProcessGroup implements ProcessGroup {
         this.defaultFlowFileExpiration = new AtomicReference<>();
         this.defaultBackPressureObjectThreshold = new AtomicReference<>();
         this.defaultBackPressureDataSizeThreshold = new AtomicReference<>();
+        this.logFileSuffix = null;
 
         // save only the nifi properties needed, and account for the possibility those properties are missing
         if (nifiProperties == null) {
@@ -611,7 +616,7 @@ public final class StandardProcessGroup implements ProcessGroup {
         try {
             // Unique port check within the same group.
             verifyPortUniqueness(port, inputPorts, this::getInputPortByName);
-            ensureUniqueVersionControlId(port, getInputPorts());
+            ensureUniqueVersionControlId(port, ProcessGroup::getInputPorts);
 
             port.setProcessGroup(this);
             inputPorts.put(requireNonNull(port).getIdentifier(), port);
@@ -695,7 +700,7 @@ public final class StandardProcessGroup implements ProcessGroup {
         try {
             // Unique port check within the same group.
             verifyPortUniqueness(port, outputPorts, this::getOutputPortByName);
-            ensureUniqueVersionControlId(port, getOutputPorts());
+            ensureUniqueVersionControlId(port, ProcessGroup::getOutputPorts);
 
             port.setProcessGroup(this);
             outputPorts.put(port.getIdentifier(), port);
@@ -771,7 +776,7 @@ public final class StandardProcessGroup implements ProcessGroup {
 
         writeLock.lock();
         try {
-            ensureUniqueVersionControlId(group, getProcessGroups());
+            ensureUniqueVersionControlId(group, ProcessGroup::getProcessGroups);
 
             group.setParent(this);
             group.getVariableRegistry().setParent(getVariableRegistry());
@@ -880,7 +885,7 @@ public final class StandardProcessGroup implements ProcessGroup {
                 throw new IllegalStateException("RemoteProcessGroup already exists with ID " + remoteGroup.getIdentifier());
             }
 
-            ensureUniqueVersionControlId(remoteGroup, getRemoteProcessGroups());
+            ensureUniqueVersionControlId(remoteGroup, ProcessGroup::getRemoteProcessGroups);
             remoteGroup.setProcessGroup(this);
             remoteGroups.put(Objects.requireNonNull(remoteGroup).getIdentifier(), remoteGroup);
             onComponentModified();
@@ -962,7 +967,7 @@ public final class StandardProcessGroup implements ProcessGroup {
                 throw new IllegalStateException("A processor is already registered to this ProcessGroup with ID " + processorId);
             }
 
-            ensureUniqueVersionControlId(processor, getProcessors());
+            ensureUniqueVersionControlId(processor, ProcessGroup::getProcessors);
 
             processor.setProcessGroup(this);
             processor.getVariableRegistry().setParent(getVariableRegistry());
@@ -977,6 +982,7 @@ public final class StandardProcessGroup implements ProcessGroup {
         }
     }
 
+
     /**
      * A component's Versioned Component ID is used to link a component on the canvas to a component in a versioned flow.
      * There may, however, be multiple instances of the same versioned flow in a single NiFi instance. In this case, we will have
@@ -989,16 +995,19 @@ public final class StandardProcessGroup implements ProcessGroup {
      * is copied & pasted instead of being moved whenever a conflict occurs.
      *
      * @param component the component whose Versioned Component ID should be nulled if there's a conflict
-     * @param componentsToCheck the components to check to determine if there's a conflict
+     * @param extractComponents a function to obtain the to check to determine if there's a conflict from a given Process Group
      */
-    private void ensureUniqueVersionControlId(final org.apache.nifi.components.VersionedComponent component,
-                                              final Collection<? extends org.apache.nifi.components.VersionedComponent> componentsToCheck) {
+    private <T extends org.apache.nifi.components.VersionedComponent> void ensureUniqueVersionControlId(final org.apache.nifi.components.VersionedComponent component,
+                                              final Function<ProcessGroup, Collection<T>> extractComponents) {
         final Optional<String> optionalVersionControlId = component.getVersionedComponentId();
         if (!optionalVersionControlId.isPresent()) {
             return;
         }
 
         final String versionControlId = optionalVersionControlId.get();
+
+        final ProcessGroup versionedGroup = getVersionedAncestorOrSelf().orElse(this);
+        final Set<T> componentsToCheck = getComponentsInVersionedFlow(versionedGroup, extractComponents);
         final boolean duplicateId = containsVersionedComponentId(componentsToCheck, versionControlId);
 
         if (duplicateId) {
@@ -1008,6 +1017,52 @@ public final class StandardProcessGroup implements ProcessGroup {
             LOG.debug("Adding {} to {}, found no conflicting Version Component ID for ID {}", component, this, versionControlId);
         }
     }
+
+    /**
+     * If this Process Group is under version control, returns <code>this</code>. Otherwise, returns the nearest parent/ancestor group
+     * that is under version control. In the event that no Process Group in the chain up to the root group is currently under version control,
+     * will return an empty optional.
+     * @return the nearest Process Group in the chain up to <code>this</code> that is currently under version control, or an empty optional.
+     */
+    private Optional<ProcessGroup> getVersionedAncestorOrSelf() {
+        return getVersionedAncestorOrSelf(this);
+    }
+
+    private Optional<ProcessGroup> getVersionedAncestorOrSelf(final ProcessGroup start) {
+        if (start == null) {
+            return Optional.empty();
+        }
+
+        if (start.getVersionControlInformation() != null) {
+            return Optional.of(start);
+        }
+
+        return getVersionedAncestorOrSelf(start.getParent());
+    }
+
+    /**
+     * Extracts all components from the given Process Group, recursively, but does not include any child group that is directly version controlled.
+     * @param group the highest-level Process Group to extract components from
+     * @param extractComponents a function that extracts the appropriate components from a given Process Group
+     * @return the set of all components in the given Process Group and children/descendant groups, excluding any child/descendant group(s) that are directly version controlled.
+     */
+    private <T extends org.apache.nifi.components.VersionedComponent> Set<T> getComponentsInVersionedFlow(final ProcessGroup group, final Function<ProcessGroup, Collection<T>> extractComponents) {
+        final Set<T> accumulated = new HashSet<>();
+        getComponentsInVersionedFlow(group, extractComponents, accumulated);
+        return accumulated;
+    }
+
+    private <T> void getComponentsInVersionedFlow(final ProcessGroup group, final Function<ProcessGroup, Collection<T>> extractComponents, final Set<T> accumulated) {
+        final Collection<T> components = extractComponents.apply(group);
+        accumulated.addAll(components);
+
+        for (final ProcessGroup child : group.getProcessGroups()) {
+            if (child.getVersionControlInformation() == null) {
+                getComponentsInVersionedFlow(child, extractComponents, accumulated);
+            }
+        }
+    }
+
 
     private boolean containsVersionedComponentId(final Collection<? extends org.apache.nifi.components.VersionedComponent> components, final String id) {
         for (final org.apache.nifi.components.VersionedComponent component : components) {
@@ -1268,7 +1323,7 @@ public final class StandardProcessGroup implements ProcessGroup {
                 }
             }
 
-            ensureUniqueVersionControlId(connection, getConnections());
+            ensureUniqueVersionControlId(connection, ProcessGroup::getConnections);
             connection.setProcessGroup(this);
             source.addConnection(connection);
             if (source != destination) {  // don't call addConnection twice if it's a self-looping connection.
@@ -1485,7 +1540,7 @@ public final class StandardProcessGroup implements ProcessGroup {
                 throw new IllegalStateException("A label already exists in this ProcessGroup with ID " + label.getIdentifier());
             }
 
-            ensureUniqueVersionControlId(label, getLabels());
+            ensureUniqueVersionControlId(label, ProcessGroup::getLabels);
             label.setProcessGroup(this);
             labels.put(label.getIdentifier(), label);
             onComponentModified();
@@ -2236,7 +2291,7 @@ public final class StandardProcessGroup implements ProcessGroup {
                 throw new IllegalStateException("A funnel already exists in this ProcessGroup with ID " + funnel.getIdentifier());
             }
 
-            ensureUniqueVersionControlId(funnel, getFunnels());
+            ensureUniqueVersionControlId(funnel, ProcessGroup::getFunnels);
 
             funnel.setProcessGroup(this);
             funnels.put(funnel.getIdentifier(), funnel);
@@ -3561,6 +3616,7 @@ public final class StandardProcessGroup implements ProcessGroup {
             versionControlInformation.getBucketIdentifier(),
             versionControlInformation.getFlowIdentifier(),
             versionControlInformation.getVersion(),
+            versionControlInformation.getStorageLocation(),
             stripContentsFromRemoteDescendantGroups(versionControlInformation.getFlowSnapshot(), true),
             versionControlInformation.getStatus()) {
 
@@ -3812,8 +3868,9 @@ public final class StandardProcessGroup implements ProcessGroup {
                     throw new FlowRegistryException(flowRegistry + " cannot currently be used to synchronize with Flow Registry because it is currently validating");
                 }
 
-                final RegisteredFlowSnapshot registrySnapshot = flowRegistry.getFlowContents(
+                final FlowSnapshotContainer registrySnapshotContainer = flowRegistry.getFlowContents(
                         FlowRegistryClientContextFactory.getAnonymousContext(), vci.getBucketIdentifier(), vci.getFlowIdentifier(), vci.getVersion(), false);
+                final RegisteredFlowSnapshot registrySnapshot = registrySnapshotContainer.getFlowSnapshot();
                 final VersionedProcessGroup registryFlow = registrySnapshot.getFlowContents();
                 vci.setFlowSnapshot(registryFlow);
             } catch (final IOException | FlowRegistryException e) {
@@ -4002,7 +4059,7 @@ public final class StandardProcessGroup implements ProcessGroup {
             final ComparableDataFlow snapshotFlow = new StandardComparableDataFlow("Versioned Flow", vci.getFlowSnapshot());
 
             final FlowComparator flowComparator = new StandardFlowComparator(snapshotFlow, currentFlow, getAncestorServiceIds(),
-                new EvolvingDifferenceDescriptor(), encryptor::decrypt, VersionedComponent::getIdentifier);
+                new EvolvingDifferenceDescriptor(), encryptor::decrypt, VersionedComponent::getIdentifier, FlowComparatorVersionedStrategy.SHALLOW);
             final FlowComparison comparison = flowComparator.compare();
             final Set<FlowDifference> differences = comparison.getDifferences().stream()
                 .filter(difference -> !FlowDifferenceFilters.isEnvironmentalChange(difference, versionedGroup, flowManager))
@@ -4023,7 +4080,8 @@ public final class StandardProcessGroup implements ProcessGroup {
             final VersionControlInformation versionControlInfo = getVersionControlInformation();
             if (versionControlInfo != null) {
                 if (!versionControlInfo.getFlowIdentifier().equals(updatedFlow.getMetadata().getFlowIdentifier())) {
-                    throw new IllegalStateException(this + " is under version control but the given flow does not match the flow that this Process Group is synchronized with");
+                    throw new IllegalStateException(this + " is under version control but the given flow does not match the flow that this Process Group is synchronized with. Currently synced to " +
+                        "flow with ID " + versionControlInfo.getFlowIdentifier() + " but proposed flow's metadata shows flow identifier as " + updatedFlow.getMetadata().getFlowIdentifier());
                 }
 
                 if (verifyNotDirty) {
@@ -4365,6 +4423,20 @@ public final class StandardProcessGroup implements ProcessGroup {
             contentSize += queueSize.getByteCount();
         }
         return new QueueSize(count, contentSize);
+    }
+
+    @Override
+    public String getLogFileSuffix() {
+        return logFileSuffix;
+    }
+
+    @Override
+    public void setLogFileSuffix(final String logFileSuffix) {
+        if (logFileSuffix != null && INVALID_DIRECTORY_NAME_CHARACTERS.matcher(logFileSuffix).find()) {
+            throw new IllegalArgumentException("Log file suffix can not contain the following characters: space, <, >, :, \', \", /, \\, |, ?, *");
+        } else {
+            this.logFileSuffix = logFileSuffix;
+        }
     }
 
     @Override

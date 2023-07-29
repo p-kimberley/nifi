@@ -21,10 +21,12 @@ import com.hierynomus.mssmb2.SMB2ShareAccess;
 import com.hierynomus.smbj.SMBClient;
 import com.hierynomus.smbj.auth.AuthenticationContext;
 import com.hierynomus.smbj.connection.Connection;
+import com.hierynomus.smbj.server.ServerList;
 import com.hierynomus.smbj.session.Session;
 import com.hierynomus.smbj.share.DiskEntry;
 import com.hierynomus.smbj.share.DiskShare;
 import com.hierynomus.smbj.share.File;
+import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,6 +61,7 @@ public class PutSmbFileTest {
     private DiskShare diskShare;
     private DiskEntry diskEntry;
     private File smbfile;
+    private ServerList serverList;
     private ByteArrayOutputStream baOutputStream;
 
     private final static String HOSTNAME = "smbhostname";
@@ -80,9 +83,12 @@ public class PutSmbFileTest {
         diskShare = mock(DiskShare.class);
         diskEntry = mock(DiskEntry.class);
         smbfile = mock(File.class);
+        serverList = mock(ServerList.class);
         baOutputStream = new ByteArrayOutputStream();
 
         when(smbClient.connect(any(String.class))).thenReturn(connection);
+        when(smbClient.getServerList()).thenReturn(serverList);
+
         when(connection.authenticate(any(AuthenticationContext.class))).thenReturn(session);
         when(session.connectShare(SHARE)).thenReturn(diskShare);
         when(diskShare.openFile(
@@ -109,10 +115,6 @@ public class PutSmbFileTest {
         testRunner.setProperty(PutSmbFile.DOMAIN, DOMAIN);
         testRunner.setProperty(PutSmbFile.USERNAME, USERNAME);
         testRunner.setProperty(PutSmbFile.PASSWORD, PASSWORD);
-
-
-        PutSmbFile PutSmbFile = (PutSmbFile) testRunner.getProcessor();
-        PutSmbFile.initSmbClient(smbClient);
     }
 
     private void testDirectoryCreation(String dirFlag, int times) throws IOException {
@@ -142,7 +144,12 @@ public class PutSmbFileTest {
 
     @BeforeEach
     public void init() throws IOException {
-        testRunner = TestRunners.newTestRunner(PutSmbFile.class);
+        testRunner = TestRunners.newTestRunner(new PutSmbFile() {
+            @Override
+            SMBClient initSmbClient(ProcessContext context) {
+                return smbClient;
+            }
+        });
         MockitoAnnotations.initMocks(this);
         setupSmbProcessor();
     }

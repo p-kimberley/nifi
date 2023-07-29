@@ -39,6 +39,7 @@ import org.apache.nifi.record.path.functions.Base64Decode;
 import org.apache.nifi.record.path.functions.Base64Encode;
 import org.apache.nifi.record.path.functions.Coalesce;
 import org.apache.nifi.record.path.functions.Concat;
+import org.apache.nifi.record.path.functions.Count;
 import org.apache.nifi.record.path.functions.EscapeJson;
 import org.apache.nifi.record.path.functions.FieldName;
 import org.apache.nifi.record.path.functions.FilterFunction;
@@ -328,8 +329,15 @@ public class RecordPathCompiler {
                         return new EscapeJson(args[0], absolute);
                     }
                     case "unescapeJson": {
-                        final RecordPathSegment[] args = getArgPaths(argumentListTree, 1, functionName, absolute);
-                        return new UnescapeJson(args[0], absolute);
+                        final int numArgs = argumentListTree.getChildCount();
+
+                        if (numArgs == 1) {
+                            final RecordPathSegment[] args = getArgPaths(argumentListTree, 1, functionName, absolute);
+                            return new UnescapeJson(args[0], null, absolute);
+                        } else {
+                            final RecordPathSegment[] args = getArgPaths(argumentListTree, 2, functionName, absolute);
+                            return new UnescapeJson(args[0], args[1], absolute);
+                        }
                     }
                     case "hash":{
                         final RecordPathSegment[] args = getArgPaths(argumentListTree, 2, functionName, absolute);
@@ -376,6 +384,10 @@ public class RecordPathCompiler {
                         }
 
                         return new Coalesce(argPaths, absolute);
+                    }
+                    case "count": {
+                        final RecordPathSegment[] args = getArgPaths(argumentListTree, 1, functionName, absolute);
+                        return new Count(args[0], absolute);
                     }
                     case "not":
                     case "contains":

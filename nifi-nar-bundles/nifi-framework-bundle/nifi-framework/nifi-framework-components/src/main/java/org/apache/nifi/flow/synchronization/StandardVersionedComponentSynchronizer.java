@@ -41,6 +41,7 @@ import org.apache.nifi.controller.label.Label;
 import org.apache.nifi.controller.queue.FlowFileQueue;
 import org.apache.nifi.controller.queue.LoadBalanceCompression;
 import org.apache.nifi.controller.queue.LoadBalanceStrategy;
+import org.apache.nifi.controller.reporting.ReportingTaskInstantiationException;
 import org.apache.nifi.controller.service.ControllerServiceNode;
 import org.apache.nifi.controller.service.ControllerServiceProvider;
 import org.apache.nifi.controller.service.ControllerServiceState;
@@ -49,6 +50,7 @@ import org.apache.nifi.flow.BatchSize;
 import org.apache.nifi.flow.Bundle;
 import org.apache.nifi.flow.ComponentType;
 import org.apache.nifi.flow.ConnectableComponent;
+import org.apache.nifi.flow.ConnectableComponentType;
 import org.apache.nifi.flow.ParameterProviderReference;
 import org.apache.nifi.flow.VersionedComponent;
 import org.apache.nifi.flow.VersionedConnection;
@@ -92,6 +94,7 @@ import org.apache.nifi.registry.VariableDescriptor;
 import org.apache.nifi.registry.flow.FlowRegistryClientContextFactory;
 import org.apache.nifi.registry.flow.FlowRegistryClientNode;
 import org.apache.nifi.registry.flow.FlowRegistryException;
+import org.apache.nifi.registry.flow.FlowSnapshotContainer;
 import org.apache.nifi.registry.flow.RegisteredFlowSnapshot;
 import org.apache.nifi.registry.flow.StandardVersionControlInformation;
 import org.apache.nifi.registry.flow.VersionControlInformation;
@@ -99,6 +102,7 @@ import org.apache.nifi.registry.flow.VersionedFlowState;
 import org.apache.nifi.registry.flow.diff.ComparableDataFlow;
 import org.apache.nifi.registry.flow.diff.DifferenceType;
 import org.apache.nifi.registry.flow.diff.FlowComparator;
+import org.apache.nifi.registry.flow.diff.FlowComparatorVersionedStrategy;
 import org.apache.nifi.registry.flow.diff.FlowComparison;
 import org.apache.nifi.registry.flow.diff.FlowDifference;
 import org.apache.nifi.registry.flow.diff.StandardComparableDataFlow;
@@ -152,6 +156,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
     private Set<String> preExistingVariables = new HashSet<>();
     private FlowSynchronizationOptions syncOptions;
+    private final ConnectableAdditionTracker connectableAdditionTracker = new ConnectableAdditionTracker();
 
     public StandardVersionedComponentSynchronizer(final VersionedFlowSynchronizationContext context) {
         this.context = context;
@@ -180,7 +185,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
         final PropertyDecryptor decryptor = options.getPropertyDecryptor();
         final FlowComparator flowComparator = new StandardFlowComparator(proposedFlow, localFlow, group.getAncestorServiceIds(),
-            new StaticDifferenceDescriptor(), decryptor::decrypt, options.getComponentComparisonIdLookup());
+            new StaticDifferenceDescriptor(), decryptor::decrypt, options.getComponentComparisonIdLookup(), FlowComparatorVersionedStrategy.DEEP);
         final FlowComparison flowComparison = flowComparator.compare();
 
         updatedVersionedComponentIds.clear();
@@ -212,6 +217,10 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                         continue;
                     }
                 }
+            }
+
+            if (diff.getDifferenceType() == DifferenceType.POSITION_CHANGED) {
+                continue;
             }
 
             final VersionedComponent component = diff.getComponentA() == null ? diff.getComponentB() : diff.getComponentA();
@@ -251,7 +260,10 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
         context.getFlowManager().withParameterContextResolution(() -> {
             try {
-                synchronize(group, versionedExternalFlow.getFlowContents(), versionedExternalFlow.getParameterContexts(), versionedExternalFlow.getParameterProviders());
+                final Map<String, ParameterProviderReference> parameterProviderReferences = versionedExternalFlow.getParameterProviders() == null
+                        ? new HashMap<>() : versionedExternalFlow.getParameterProviders();
+                final ProcessGroup topLevelGroup = syncOptions.getTopLevelGroupId() != null ? context.getFlowManager().getGroup(syncOptions.getTopLevelGroupId()) : group;
+                synchronize(group, versionedExternalFlow.getFlowContents(), versionedExternalFlow.getParameterContexts(), parameterProviderReferences, topLevelGroup);
             } catch (final ProcessorInstantiationException pie) {
                 throw new RuntimeException(pie);
             }
@@ -261,7 +273,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
     }
 
     private void synchronize(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, VersionedParameterContext> versionedParameterContexts,
-                             final Map<String, ParameterProviderReference> parameterProviderReferences)
+                             final Map<String, ParameterProviderReference> parameterProviderReferences, final ProcessGroup topLevelGroup)
         throws ProcessorInstantiationException {
 
         // Some components, such as Processors, may have a Scheduled State of RUNNING in the proposed flow. However, if we
@@ -304,6 +316,10 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         group.setDefaultFlowFileExpiration(proposed.getDefaultFlowFileExpiration());
         group.setDefaultBackPressureObjectThreshold(proposed.getDefaultBackPressureObjectThreshold());
         group.setDefaultBackPressureDataSizeThreshold(proposed.getDefaultBackPressureDataSizeThreshold());
+
+        if (group.getLogFileSuffix() == null || group.getLogFileSuffix().isEmpty()) {
+            group.setLogFileSuffix(proposed.getLogFileSuffix());
+        }
 
         final VersionedFlowCoordinates remoteCoordinates = proposed.getVersionedFlowCoordinates();
         if (remoteCoordinates == null) {
@@ -373,7 +389,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         final Map<String, ControllerServiceNode> controllerServicesByVersionedId = componentsById(group, grp -> grp.getControllerServices(false),
             ControllerServiceNode::getIdentifier, ControllerServiceNode::getVersionedComponentId);
         removeMissingControllerServices(group, proposed, controllerServicesByVersionedId);
-        synchronizeControllerServices(group, proposed, controllerServicesByVersionedId);
+        synchronizeControllerServices(group, proposed, controllerServicesByVersionedId, topLevelGroup);
 
         // Remove any connections that are not in the Proposed Process Group
         // Connections must be the first thing to remove, not the last. Otherwise, we will fail
@@ -389,76 +405,80 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         final Set<String> connectionsWithTempDestination = updateConnectionDestinations(group, proposed, connectionsByVersionedId);
 
         try {
-            final Map<String, Funnel> funnelsByVersionedId = componentsById(group, ProcessGroup::getFunnels);
-            final Map<String, ProcessorNode> processorsByVersionedId = componentsById(group, ProcessGroup::getProcessors);
-            final Map<String, Port> inputPortsByVersionedId = componentsById(group, ProcessGroup::getInputPorts);
-            final Map<String, Port> outputPortsByVersionedId = componentsById(group, ProcessGroup::getOutputPorts);
-            final Map<String, Label> labelsByVersionedId = componentsById(group, ProcessGroup::getLabels, Label::getIdentifier, Label::getVersionedComponentId);
-            final Map<String, RemoteProcessGroup> rpgsByVersionedId = componentsById(group, ProcessGroup::getRemoteProcessGroups,
-                RemoteProcessGroup::getIdentifier, RemoteProcessGroup::getVersionedComponentId);
-            final Map<String, ProcessGroup> childGroupsByVersionedId = componentsById(group, ProcessGroup::getProcessGroups, ProcessGroup::getIdentifier, ProcessGroup::getVersionedComponentId);
+            try {
+                final Map<String, Funnel> funnelsByVersionedId = componentsById(group, ProcessGroup::getFunnels);
+                final Map<String, ProcessorNode> processorsByVersionedId = componentsById(group, ProcessGroup::getProcessors);
+                final Map<String, Port> inputPortsByVersionedId = componentsById(group, ProcessGroup::getInputPorts);
+                final Map<String, Port> outputPortsByVersionedId = componentsById(group, ProcessGroup::getOutputPorts);
+                final Map<String, Label> labelsByVersionedId = componentsById(group, ProcessGroup::getLabels, Label::getIdentifier, Label::getVersionedComponentId);
+                final Map<String, RemoteProcessGroup> rpgsByVersionedId = componentsById(group, ProcessGroup::getRemoteProcessGroups,
+                    RemoteProcessGroup::getIdentifier, RemoteProcessGroup::getVersionedComponentId);
+                final Map<String, ProcessGroup> childGroupsByVersionedId = componentsById(group, ProcessGroup::getProcessGroups, ProcessGroup::getIdentifier, ProcessGroup::getVersionedComponentId);
 
-            removeMissingProcessors(group, proposed, processorsByVersionedId);
-            removeMissingFunnels(group, proposed, funnelsByVersionedId);
-            removeMissingInputPorts(group, proposed, inputPortsByVersionedId);
-            removeMissingOutputPorts(group, proposed, outputPortsByVersionedId);
-            removeMissingLabels(group, proposed, labelsByVersionedId);
-            removeMissingRpg(group, proposed, rpgsByVersionedId);
-            removeMissingChildGroups(group, proposed, childGroupsByVersionedId);
+                removeMissingProcessors(group, proposed, processorsByVersionedId);
+                removeMissingFunnels(group, proposed, funnelsByVersionedId);
+                removeMissingInputPorts(group, proposed, inputPortsByVersionedId);
+                removeMissingOutputPorts(group, proposed, outputPortsByVersionedId);
+                removeMissingLabels(group, proposed, labelsByVersionedId);
+                removeMissingRpg(group, proposed, rpgsByVersionedId);
+                removeMissingChildGroups(group, proposed, childGroupsByVersionedId);
 
-            // Synchronize Child Process Groups
-            synchronizeChildGroups(group, proposed, versionedParameterContexts, childGroupsByVersionedId, parameterProviderReferences);
+                // Synchronize Child Process Groups
+                synchronizeChildGroups(group, proposed, versionedParameterContexts, childGroupsByVersionedId, parameterProviderReferences, topLevelGroup);
 
-            synchronizeFunnels(group, proposed, funnelsByVersionedId);
-            synchronizeInputPorts(group, proposed, proposedPortFinalNames, inputPortsByVersionedId);
-            synchronizeOutputPorts(group, proposed, proposedPortFinalNames, outputPortsByVersionedId);
-            synchronizeLabels(group, proposed, labelsByVersionedId);
-            synchronizeProcessors(group, proposed, processorsByVersionedId);
-            synchronizeRemoteGroups(group, proposed, rpgsByVersionedId);
+                synchronizeFunnels(group, proposed, funnelsByVersionedId);
+                synchronizeInputPorts(group, proposed, proposedPortFinalNames, inputPortsByVersionedId);
+                synchronizeOutputPorts(group, proposed, proposedPortFinalNames, outputPortsByVersionedId);
+                synchronizeLabels(group, proposed, labelsByVersionedId);
+                synchronizeProcessors(group, proposed, processorsByVersionedId, topLevelGroup);
+                synchronizeRemoteGroups(group, proposed, rpgsByVersionedId);
+            } finally {
+                // Make sure that we reset the connections
+                restoreConnectionDestinations(group, proposed, connectionsByVersionedId, connectionsWithTempDestination);
+            }
+
+            Map<String, Parameter> newParameters = new HashMap<>();
+            if (!proposedParameterContextExistsBeforeSynchronize && this.context.getFlowMappingOptions().isMapControllerServiceReferencesToVersionedId()) {
+                Map<String, String> controllerServiceVersionedIdToId = group.getControllerServices(false)
+                    .stream()
+                    .filter(controllerServiceNode -> controllerServiceNode.getVersionedComponentId().isPresent())
+                    .collect(Collectors.toMap(
+                        controllerServiceNode -> controllerServiceNode.getVersionedComponentId().get(),
+                        ComponentNode::getIdentifier
+                    ));
+
+                ParameterContext parameterContext = group.getParameterContext();
+
+                if (parameterContext != null) {
+                    parameterContext.getParameters().forEach((descriptor, parameter) -> {
+                        List<ParameterReferencedControllerServiceData> referencedControllerServiceData = parameterContext
+                            .getParameterReferenceManager()
+                            .getReferencedControllerServiceData(parameterContext, descriptor.getName());
+
+                        if (referencedControllerServiceData.isEmpty()) {
+                            newParameters.put(descriptor.getName(), parameter);
+                        } else {
+                            final Parameter adjustedParameter = new Parameter(parameter.getDescriptor(), controllerServiceVersionedIdToId.get(parameter.getValue()));
+                            newParameters.put(descriptor.getName(), adjustedParameter);
+                        }
+                    });
+
+                    parameterContext.setParameters(newParameters);
+                }
+            }
+
+            // We can now add in any necessary connections, since all connectable components have now been created.
+            synchronizeConnections(group, proposed, connectionsByVersionedId);
+
+            // All ports have now been added/removed as necessary. We can now resolve the port names.
+            updatePortsToFinalNames(proposedPortFinalNames);
+
+            // Start all components that are queued up to be started now
+            context.getComponentScheduler().resume();
         } finally {
-            // Make sure that we reset the connections
-            restoreConnectionDestinations(group, proposed, connectionsByVersionedId, connectionsWithTempDestination);
+            // If we created a temporary funnel, remove it if there's no longer anything pointing to it.
             removeTemporaryFunnel(group);
         }
-
-        Map<String, Parameter> newParameters = new HashMap<>();
-        if (!proposedParameterContextExistsBeforeSynchronize && this.context.getFlowMappingOptions().isMapControllerServiceReferencesToVersionedId()) {
-            Map<String, String> controllerServiceVersionedIdToId = group.getControllerServices(false)
-                .stream()
-                .filter(controllerServiceNode -> controllerServiceNode.getVersionedComponentId().isPresent())
-                .collect(Collectors.toMap(
-                    controllerServiceNode -> controllerServiceNode.getVersionedComponentId().get(),
-                    ComponentNode::getIdentifier
-                ));
-
-            ParameterContext parameterContext = group.getParameterContext();
-
-            if (parameterContext != null) {
-                parameterContext.getParameters().forEach((descriptor, parameter) -> {
-                    List<ParameterReferencedControllerServiceData> referencedControllerServiceData = parameterContext
-                        .getParameterReferenceManager()
-                        .getReferencedControllerServiceData(parameterContext, descriptor.getName());
-
-                    if (referencedControllerServiceData.isEmpty()) {
-                        newParameters.put(descriptor.getName(), parameter);
-                    } else {
-                        final Parameter adjustedParameter = new Parameter(parameter.getDescriptor(), controllerServiceVersionedIdToId.get(parameter.getValue()));
-                        newParameters.put(descriptor.getName(), adjustedParameter);
-                    }
-                });
-
-                parameterContext.setParameters(newParameters);
-            }
-        }
-
-        // We can now add in any necessary connections, since all connectable components have now been created.
-        synchronizeConnections(group, proposed, connectionsByVersionedId);
-
-        // All ports have now been added/removed as necessary. We can now resolve the port names.
-        updatePortsToFinalNames(proposedPortFinalNames);
-
-        // Start all components that are queued up to be started now
-        context.getComponentScheduler().resume();
     }
 
     private String determineRegistryId(final VersionedFlowCoordinates coordinates) {
@@ -498,33 +518,20 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
     }
 
     private void synchronizeChildGroups(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, VersionedParameterContext> versionedParameterContexts,
-                                        final Map<String, ProcessGroup> childGroupsByVersionedId,
-                                        final Map<String, ParameterProviderReference> parameterProviderReferences) throws ProcessorInstantiationException {
+                                        final Map<String, ProcessGroup> childGroupsByVersionedId, final Map<String, ParameterProviderReference> parameterProviderReferences,
+                                        final ProcessGroup topLevelGroup) throws ProcessorInstantiationException {
 
         for (final VersionedProcessGroup proposedChildGroup : proposed.getProcessGroups()) {
             final ProcessGroup childGroup = childGroupsByVersionedId.get(proposedChildGroup.getIdentifier());
             final VersionedFlowCoordinates childCoordinates = proposedChildGroup.getVersionedFlowCoordinates();
 
-            // if there is a nested process group that is version controlled, make sure get the param contexts that go with that snapshot
-            // instead of the ones from the parent which would have been passed in to this method
-            Map<String, VersionedParameterContext> childParameterContexts = versionedParameterContexts;
-            if (childCoordinates != null && syncOptions.isUpdateDescendantVersionedFlows()) {
-                final String childParameterContextName = proposedChildGroup.getParameterContextName();
-                if (childParameterContextName != null && !versionedParameterContexts.containsKey(childParameterContextName)) {
-                    childParameterContexts = getVersionedParameterContexts(childCoordinates);
-                } else {
-                    childParameterContexts = versionedParameterContexts;
-                }
-            }
-
             if (childGroup == null) {
                 final ProcessGroup added = addProcessGroup(group, proposedChildGroup, context.getComponentIdGenerator(), preExistingVariables,
-                        childParameterContexts, parameterProviderReferences);
+                        versionedParameterContexts, parameterProviderReferences, topLevelGroup);
                 context.getFlowManager().onProcessGroupAdded(added);
                 added.findAllRemoteProcessGroups().forEach(RemoteProcessGroup::initialize);
                 LOG.info("Added {} to {}", added, group);
             } else if (childCoordinates == null || syncOptions.isUpdateDescendantVersionedFlows()) {
-
                 final StandardVersionedComponentSynchronizer sync = new StandardVersionedComponentSynchronizer(context);
                 sync.setPreExistingVariables(preExistingVariables);
                 sync.setUpdatedVersionedComponentIds(updatedVersionedComponentIds);
@@ -533,14 +540,15 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                     .build();
 
                 sync.setSynchronizationOptions(options);
-                sync.synchronize(childGroup, proposedChildGroup, childParameterContexts, parameterProviderReferences);
+                sync.synchronize(childGroup, proposedChildGroup, versionedParameterContexts, parameterProviderReferences, topLevelGroup);
 
                 LOG.info("Updated {}", childGroup);
             }
         }
     }
 
-    private void synchronizeControllerServices(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, ControllerServiceNode> servicesByVersionedId) {
+    private void synchronizeControllerServices(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, ControllerServiceNode> servicesByVersionedId,
+                                               final ProcessGroup topLevelGroup) {
         // Controller Services have to be handled a bit differently than other components. This is because Processors and Controller
         // Services may reference other Controller Services. Since we may be adding Service A, which depends on Service B, before adding
         // Service B, we need to ensure that we create all Controller Services first and then call updateControllerService for each
@@ -553,7 +561,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         for (final VersionedControllerService proposedService : proposed.getControllerServices()) {
             ControllerServiceNode service = servicesByVersionedId.get(proposedService.getIdentifier());
             if (service == null) {
-                service = addControllerService(group, proposedService, context.getComponentIdGenerator());
+                service = addControllerService(group, proposedService, context.getComponentIdGenerator(), topLevelGroup);
 
                 LOG.info("Added {} to {}", service, group);
                 servicesAdded.put(proposedService.getIdentifier(), service);
@@ -571,7 +579,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 continue;
             }
 
-            updateControllerService(addedService, proposedService);
+            updateControllerService(addedService, proposedService, topLevelGroup);
         }
 
         // Update all of the Controller Services to match the VersionedControllerService
@@ -580,7 +588,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
             final VersionedControllerService proposedService = entry.getValue();
 
             if (updatedVersionedComponentIds.contains(proposedService.getIdentifier())) {
-                updateControllerService(service, proposedService);
+                updateControllerService(service, proposedService, topLevelGroup);
                 LOG.info("Updated {}", service);
             }
         }
@@ -607,15 +615,38 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
     private void removeMissingConnections(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, Connection> connectionsByVersionedId) {
         final Set<String> connectionsRemoved = new HashSet<>(connectionsByVersionedId.keySet());
+        final Set<String> connectionsRemovedDueToChangingSourceId = new HashSet<>();
 
         for (final VersionedConnection proposedConnection : proposed.getConnections()) {
             connectionsRemoved.remove(proposedConnection.getIdentifier());
+        }
+
+        // Check for any case where there's an existing connection whose ID matches the proposed connection, but whose source doesn't match
+        // the proposed source ID. The source of a Connection should never change from one component to another. However, there are cases
+        // in which the Versioned Component ID might change, in order to avoid conflicts with sibling Process Groups. In such a case, we must remove
+        // the connection and create a new one, since we cannot simply change the source in the same way that we can change the destination.
+        for (final VersionedConnection proposedConnection : proposed.getConnections()) {
+            final Connection existingConnection = connectionsByVersionedId.get(proposedConnection.getIdentifier());
+
+            if (existingConnection != null) {
+                final String proposedSourceId = proposedConnection.getSource().getId();
+                final String existingSourceId = existingConnection.getSource().getVersionedComponentId().orElse(null);
+
+                if (existingSourceId != null && !Objects.equals(proposedSourceId, existingSourceId)) {
+                    connectionsRemovedDueToChangingSourceId.add(proposedConnection.getIdentifier());
+                    connectionsRemoved.add(proposedConnection.getIdentifier());
+                }
+            }
         }
 
         for (final String removedVersionedId : connectionsRemoved) {
             final Connection connection = connectionsByVersionedId.get(removedVersionedId);
             LOG.info("Removing {} from {}", connection, group);
             group.removeConnection(connection);
+        }
+
+        for (final String removedVersionedId : connectionsRemovedDueToChangingSourceId) {
+            connectionsByVersionedId.remove(removedVersionedId);
         }
     }
 
@@ -646,21 +677,20 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 continue;
             }
 
-            // If the Connection's destination didn't change, nothing to do
+            // If the Connection's destination didn't change, and the new is still reachable, nothing to do
             final String destinationVersionId = connection.getDestination().getVersionedComponentId().orElse(null);
             final String proposedDestinationId = proposedConnection.getDestination().getId();
-            if (Objects.equals(destinationVersionId, proposedDestinationId)) {
+
+            Connectable newDestination = getConnectable(group, proposedConnection.getDestination());
+            final boolean newDestinationReachableFromSource = isConnectionDestinationReachable(connection.getSource(), newDestination);
+            if (Objects.equals(destinationVersionId, proposedDestinationId) && newDestinationReachableFromSource) {
                 continue;
             }
 
             // Find the destination of the connection. If the destination doesn't yet exist (because it's part of the proposed Process Group but not yet added),
             // we will set the destination to a temporary destination. Then, after adding components, we will update the destinations again.
-            Connectable newDestination = getConnectable(group, proposedConnection.getDestination());
-            if (
-                newDestination == null
-                ||
-                (newDestination.getConnectableType() == ConnectableType.OUTPUT_PORT && !newDestination.getProcessGroup().equals(connection.getProcessGroup()))
-            ) {
+            final boolean useTempDestination = isTempDestinationNecessary(connection, proposedConnection, newDestination);
+            if (useTempDestination) {
                 final Funnel temporaryDestination = getTemporaryFunnel(connection.getProcessGroup());
                 LOG.debug("Updated Connection {} to have a temporary destination of {}", connection, temporaryDestination);
                 newDestination = temporaryDestination;
@@ -671,6 +701,59 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         }
 
         return connectionsWithTempDestination;
+    }
+
+    /**
+     * Checks if a Connection can be made from the given source component to the given destination component
+     * @param source the source component
+     * @param destination the destination component
+     * @return true if the connection is allowable, <code>false</code> if the connection cannot be made due to the Process Group hierarchies
+     */
+    private boolean isConnectionDestinationReachable(final Connectable source, final Connectable destination) {
+        if (source == null || destination == null) {
+            return false;
+        }
+
+        // If the source is an Output Port, the destination must be in the parent group, unless the destination is the Input Port of another group
+        if (source.getConnectableType() == ConnectableType.OUTPUT_PORT) {
+            if (destination.getConnectableType() == ConnectableType.INPUT_PORT) {
+                return Objects.equals(source.getProcessGroup().getParent(), destination.getProcessGroup().getParent());
+            }
+
+            return Objects.equals(source.getProcessGroup().getParent(), destination.getProcessGroup());
+        }
+
+        return Objects.equals(source.getProcessGroup(), destination.getProcessGroup());
+    }
+
+    private boolean isTempDestinationNecessary(final Connection existingConnection, final VersionedConnection proposedConnection, final Connectable newDestination) {
+        if (newDestination == null) {
+            return true;
+        }
+
+        // If the destination is an Input Port or an Output Port and the group changed, use a temp destination
+        final ConnectableType connectableType = newDestination.getConnectableType();
+        final boolean port = connectableType == ConnectableType.OUTPUT_PORT || connectableType == ConnectableType.INPUT_PORT;
+        final boolean groupChanged = !newDestination.getProcessGroup().equals(existingConnection.getProcessGroup());
+        if (port && groupChanged) {
+            return true;
+        }
+
+        // If the proposed destination has a different group than the existing group, use a temp destination.
+        final String proposedDestinationGroupId = proposedConnection.getDestination().getGroupId();
+        final String destinationGroupVersionedComponentId = existingConnection.getDestination().getProcessGroup().getVersionedComponentId().orElse(null);
+        if (!Objects.equals(proposedDestinationGroupId, destinationGroupVersionedComponentId)) {
+            return true;
+        }
+
+        // If the proposed connection exists in a different group than the existing group, use a temp destination.
+        final String connectionGroupVersionedComponentId = existingConnection.getProcessGroup().getVersionedComponentId().orElse(null);
+        final String proposedGroupId = proposedConnection.getGroupIdentifier();
+        if (!Objects.equals(proposedGroupId, connectionGroupVersionedComponentId)) {
+            return true;
+        }
+
+        return false;
     }
 
     private Funnel getTemporaryFunnel(final ProcessGroup group) {
@@ -915,33 +998,22 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         }
     }
 
-    private void synchronizeProcessors(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, ProcessorNode> processorsByVersionedId)
+    private void synchronizeProcessors(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, ProcessorNode> processorsByVersionedId,
+                                       final ProcessGroup topLevelGroup)
                 throws ProcessorInstantiationException {
 
         for (final VersionedProcessor proposedProcessor : proposed.getProcessors()) {
             final ProcessorNode processor = processorsByVersionedId.get(proposedProcessor.getIdentifier());
             if (processor == null) {
-                final ProcessorNode added = addProcessor(group, proposedProcessor, context.getComponentIdGenerator());
+                final ProcessorNode added = addProcessor(group, proposedProcessor, context.getComponentIdGenerator(), topLevelGroup);
                 LOG.info("Added {} to {}", added, group);
             } else if (updatedVersionedComponentIds.contains(proposedProcessor.getIdentifier())) {
-                updateProcessor(processor, proposedProcessor);
+                updateProcessor(processor, proposedProcessor, topLevelGroup);
                 LOG.info("Updated {}", processor);
             } else {
                 processor.setPosition(new Position(proposedProcessor.getPosition().getX(), proposedProcessor.getPosition().getY()));
             }
         }
-    }
-
-    private Set<Relationship> getAutoTerminatedRelationships(final ProcessorNode processor, final VersionedProcessor proposedProcessor) {
-        final Set<String> relationshipNames = proposedProcessor.getAutoTerminatedRelationships();
-        if (relationshipNames == null) {
-            return Collections.emptySet();
-        }
-
-        return relationshipNames.stream()
-            .map(processor::getRelationship)
-            .filter(Objects::nonNull)
-            .collect(Collectors.toSet());
     }
 
     private void synchronizeRemoteGroups(final ProcessGroup group, final VersionedProcessGroup proposed, final Map<String, RemoteProcessGroup> rpgsByVersionedId) {
@@ -1094,7 +1166,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
     private ProcessGroup addProcessGroup(final ProcessGroup destination, final VersionedProcessGroup proposed, final ComponentIdGenerator componentIdGenerator, final Set<String> variablesToSkip,
                                          final Map<String, VersionedParameterContext> versionedParameterContexts,
-                                         final Map<String, ParameterProviderReference> parameterProviderReferences) throws ProcessorInstantiationException {
+                                         final Map<String, ParameterProviderReference> parameterProviderReferences, ProcessGroup topLevelGroup) throws ProcessorInstantiationException {
         final String id = componentIdGenerator.generateUuid(proposed.getIdentifier(), proposed.getInstanceIdentifier(), destination.getIdentifier());
         final ProcessGroup group = context.getFlowManager().createProcessGroup(id);
         group.setVersionedComponentId(proposed.getIdentifier());
@@ -1111,12 +1183,13 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
             .updateGroupSettings(true)
             .build();
         sync.setSynchronizationOptions(options);
-        sync.synchronize(group, proposed, versionedParameterContexts, parameterProviderReferences);
+        sync.synchronize(group, proposed, versionedParameterContexts, parameterProviderReferences, topLevelGroup);
 
         return group;
     }
 
-    private ControllerServiceNode addControllerService(final ProcessGroup destination, final VersionedControllerService proposed, final ComponentIdGenerator componentIdGenerator) {
+    private ControllerServiceNode addControllerService(final ProcessGroup destination, final VersionedControllerService proposed, final ComponentIdGenerator componentIdGenerator,
+                                                       final ProcessGroup topLevelGroup) {
         final String destinationId = destination == null ? "Controller" : destination.getIdentifier();
         final String identifier = componentIdGenerator.generateUuid(proposed.getIdentifier(), proposed.getInstanceIdentifier(), destinationId);
         LOG.debug("Adding Controller Service with ID {} of type {}", identifier, proposed.getType());
@@ -1131,6 +1204,8 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         } else {
             destination.addControllerService(newService);
         }
+
+        updateControllerService(newService, proposed, topLevelGroup);
 
         return newService;
     }
@@ -1175,11 +1250,13 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 verifyCanSynchronize(controllerService, proposed);
 
                 try {
+                    final ProcessGroup topLevelGroup = synchronizationOptions.getTopLevelGroupId() != null ? context.getFlowManager().getGroup(synchronizationOptions.getTopLevelGroupId()) : group;
+
                     if (proposed == null) {
                         serviceProvider.removeControllerService(controllerService);
                         LOG.info("Successfully synchronized {} by removing it from the flow", controllerService);
                     } else if (controllerService == null) {
-                        final ControllerServiceNode added = addControllerService(group, proposed, synchronizationOptions.getComponentIdGenerator());
+                        final ControllerServiceNode added = addControllerService(group, proposed, synchronizationOptions.getComponentIdGenerator(), topLevelGroup);
 
                         if (proposed.getScheduledState() == org.apache.nifi.flow.ScheduledState.ENABLED) {
                             servicesToRestart.add(added);
@@ -1187,7 +1264,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
                         LOG.info("Successfully synchronized {} by adding it to the flow", added);
                     } else {
-                        updateControllerService(controllerService, proposed);
+                        updateControllerService(controllerService, proposed, topLevelGroup);
 
                         if (proposed.getScheduledState() == org.apache.nifi.flow.ScheduledState.ENABLED) {
                             servicesToRestart.add(controllerService);
@@ -1243,7 +1320,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         }
     }
 
-    private void updateControllerService(final ControllerServiceNode service, final VersionedControllerService proposed) {
+    private void updateControllerService(final ControllerServiceNode service, final VersionedControllerService proposed, final ProcessGroup topLevelGroup) {
         LOG.debug("Updating {}", service);
 
         service.pauseValidationTrigger();
@@ -1260,16 +1337,17 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 service.setBulletinLevel(LogLevel.WARN);
             }
 
-            final Set<String> sensitiveDynamicPropertyNames = getSensitiveDynamicPropertyNames(service, proposed.getProperties(), proposed.getPropertyDescriptors().values());
-            final Map<String, String> properties = populatePropertiesMap(service, proposed.getProperties(), proposed.getPropertyDescriptors(), service.getProcessGroup());
-            service.setProperties(properties, true, sensitiveDynamicPropertyNames);
-
             if (!isEqual(service.getBundleCoordinate(), proposed.getBundle())) {
                 final BundleCoordinate newBundleCoordinate = toCoordinate(proposed.getBundle());
                 final List<PropertyDescriptor> descriptors = new ArrayList<>(service.getRawPropertyValues().keySet());
                 final Set<URL> additionalUrls = service.getAdditionalClasspathResources(descriptors);
                 context.getReloadComponent().reload(service, proposed.getType(), newBundleCoordinate, additionalUrls);
             }
+
+            final Set<String> sensitiveDynamicPropertyNames = getSensitiveDynamicPropertyNames(service, proposed.getProperties(), proposed.getPropertyDescriptors().values());
+            final Map<String, String> properties = populatePropertiesMap(service, proposed.getProperties(), proposed.getPropertyDescriptors(), service.getProcessGroup(), topLevelGroup);
+            service.setProperties(properties, true, sensitiveDynamicPropertyNames);
+
         } finally {
             service.resumeValidationTrigger();
         }
@@ -1305,7 +1383,8 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
     }
 
     private Map<String, String> populatePropertiesMap(final ComponentNode componentNode, final Map<String, String> proposedProperties,
-                                                      final Map<String, VersionedPropertyDescriptor> proposedPropertyDescriptors, final ProcessGroup group) {
+                                                      final Map<String, VersionedPropertyDescriptor> proposedPropertyDescriptors,
+                                                      final ProcessGroup group, final ProcessGroup topLevelGroup) {
 
         // Explicitly set all existing properties to null, except for sensitive properties, so that if there isn't an entry in the proposedProperties
         // it will get removed from the processor. We don't do this for sensitive properties because when we retrieve the VersionedProcessGroup from registry,
@@ -1333,14 +1412,14 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                     || (versionedDescriptor != null && versionedDescriptor.isSensitive());
 
                 String value;
-                if (descriptor != null && referencesService) {
+                if (descriptor != null && referencesService && (proposedProperties.get(propertyName) != null)) {
                     // Need to determine if the component's property descriptor for this service is already set to an id
                     // of an existing service that is outside the current processor group, and if it is we want to leave
                     // the property set to that value
                     String existingExternalServiceId = null;
                     final String componentDescriptorValue = componentNode.getEffectivePropertyValue(descriptor);
                     if (componentDescriptorValue != null) {
-                        final ProcessGroup parentGroup = group.getParent();
+                        final ProcessGroup parentGroup = topLevelGroup.getParent();
                         if (parentGroup != null) {
                             final ControllerServiceNode serviceNode = parentGroup.findControllerService(componentDescriptorValue, false, true);
                             if (serviceNode != null) {
@@ -1465,7 +1544,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
             // Make sure that we have a unique name and add the Parameter Context if none exists
             if (parameterContext == null) {
                 final String contextId = synchronizationOptions.getComponentIdGenerator().generateUuid(proposed.getIdentifier(), proposed.getInstanceIdentifier(), "Controller");
-                final ParameterContext added = createParameterContext(proposed, contextId, Collections.emptyMap());
+                final ParameterContext added = createParameterContext(proposed, contextId, Collections.emptyMap(), Collections.emptyMap(), synchronizationOptions.getComponentIdGenerator());
                 LOG.info("Successfully synchronized {} by adding it to the flow", added);
                 return;
             }
@@ -1484,9 +1563,12 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                     final Set<ControllerServiceNode> referencingServices = referenceManager.getControllerServicesReferencing(parameterContext, paramName);
 
                     for (final ControllerServiceNode referencingService : referencingServices) {
+                        final boolean isServiceActive = referencingService.isActive();
                         stopControllerService(referencingService, null, timeout, synchronizationOptions.getComponentStopTimeoutAction(), componentsToRestart, servicesToRestart,
                                 synchronizationOptions);
-                        servicesToRestart.add(referencingService);
+                        if (isServiceActive) {
+                            servicesToRestart.add(referencingService);
+                        }
                     }
                 }
 
@@ -1717,6 +1799,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 groupToUpdate.setComments(proposed.getComments());
                 groupToUpdate.setName(proposed.getName());
                 groupToUpdate.setPosition(new Position(proposed.getPosition().getX(), proposed.getPosition().getY()));
+                groupToUpdate.setLogFileSuffix(proposed.getLogFileSuffix());
 
                 if (processGroup == null) {
                     LOG.info("Successfully synchronized {} by adding it to the flow", groupToUpdate);
@@ -1876,16 +1959,16 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 final ParameterContext selectedParameterContext;
                 if (contextByName == null) {
                     final String parameterContextId = componentIdGenerator.generateUuid(versionedParameterContext.getName(), versionedParameterContext.getName(), versionedParameterContext.getName());
-                    selectedParameterContext = createParameterContext(versionedParameterContext, parameterContextId, versionedParameterContexts);
+                    selectedParameterContext = createParameterContext(versionedParameterContext, parameterContextId, versionedParameterContexts, parameterProviderReferences, componentIdGenerator);
                 } else {
                     selectedParameterContext = contextByName;
-                    addMissingConfiguration(versionedParameterContext, selectedParameterContext, versionedParameterContexts);
+                    addMissingConfiguration(versionedParameterContext, selectedParameterContext, versionedParameterContexts, parameterProviderReferences, componentIdGenerator);
                 }
 
                 group.setParameterContext(selectedParameterContext);
             } else {
                 // Update the current Parameter Context so that it has any Parameters included in the proposed context
-                addMissingConfiguration(versionedParameterContext, currentParamContext, versionedParameterContexts);
+                addMissingConfiguration(versionedParameterContext, currentParamContext, versionedParameterContexts, parameterProviderReferences, componentIdGenerator);
             }
         }
     }
@@ -1900,16 +1983,25 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 if (reference == null) {
                     parameterProviderIdToSet = null;
                 } else {
-                    final String newParameterProviderId = componentIdGenerator.generateUuid(parameterProviderId, parameterProviderId, null);
+                    parameterProviderNode = context.getFlowManager().getParameterProvider(reference.getIdentifier());
+                    if (parameterProviderNode != null) {
+                        parameterProviderIdToSet = reference.getIdentifier();
+                    } else {
+                        final String newParameterProviderId = componentIdGenerator.generateUuid(parameterProviderId, parameterProviderId, null);
 
-                    final Bundle bundle = reference.getBundle();
-                    parameterProviderNode = context.getFlowManager().createParameterProvider(reference.getType(), newParameterProviderId,
-                            new BundleCoordinate(bundle.getGroup(), bundle.getArtifact(), bundle.getVersion()), true);
+                        final Bundle bundle = reference.getBundle();
+                        parameterProviderNode = context.getFlowManager().createParameterProvider(reference.getType(), newParameterProviderId,
+                                new BundleCoordinate(bundle.getGroup(), bundle.getArtifact(), bundle.getVersion()), true);
 
-                    parameterProviderNode.pauseValidationTrigger(); // avoid triggering validation multiple times
-                    parameterProviderNode.setName(reference.getName());
-                    parameterProviderNode.resumeValidationTrigger();
-                    parameterProviderIdToSet = parameterProviderNode.getIdentifier();
+                        parameterProviderNode.pauseValidationTrigger(); // avoid triggering validation multiple times
+                        parameterProviderNode.setName(reference.getName());
+                        parameterProviderNode.resumeValidationTrigger();
+                        parameterProviderIdToSet = parameterProviderNode.getIdentifier();
+
+                        // Set the reference id to the new id so it can be picked up by other contexts referencing the same provider
+                        reference.setIdentifier(parameterProviderIdToSet);
+                        parameterProviderReferences.put(parameterProviderIdToSet, reference);
+                    }
                 }
             }
         }
@@ -2001,14 +2093,15 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
     }
 
     private ParameterContext createParameterContext(final VersionedParameterContext versionedParameterContext, final String parameterContextId,
-                                                    final Map<String, VersionedParameterContext> versionedParameterContexts) {
+                                                    final Map<String, VersionedParameterContext> versionedParameterContexts,
+                                                    final Map<String, ParameterProviderReference> parameterProviderReferences, final ComponentIdGenerator componentIdGenerator) {
 
         final Map<String, Parameter> parameters = createParameterMap(versionedParameterContext.getParameters());
 
         final List<String> parameterContextRefs = new ArrayList<>();
         if (versionedParameterContext.getInheritedParameterContexts() != null) {
             versionedParameterContext.getInheritedParameterContexts().stream()
-                .map(name -> createParameterReferenceId(name, versionedParameterContexts))
+                .map(name -> createParameterReferenceId(name, versionedParameterContexts, parameterProviderReferences, componentIdGenerator))
                 .forEach(parameterContextRefs::add);
         }
 
@@ -2038,29 +2131,35 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         return parameters;
     }
 
-    private String createParameterReferenceId(final String parameterContextName, final Map<String, VersionedParameterContext> versionedParameterContexts) {
+    private String createParameterReferenceId(final String parameterContextName, final Map<String, VersionedParameterContext> versionedParameterContexts,
+                                              final Map<String, ParameterProviderReference> parameterProviderReferences, final ComponentIdGenerator componentIdGenerator) {
         final VersionedParameterContext versionedParameterContext = versionedParameterContexts.get(parameterContextName);
-        final ParameterContext selectedParameterContext = selectParameterContext(versionedParameterContext, versionedParameterContexts);
+        final ParameterContext selectedParameterContext = selectParameterContext(versionedParameterContext, versionedParameterContexts, parameterProviderReferences, componentIdGenerator);
         return selectedParameterContext.getIdentifier();
     }
 
-    private ParameterContext selectParameterContext(final VersionedParameterContext versionedParameterContext, final Map<String, VersionedParameterContext> versionedParameterContexts) {
+    private ParameterContext selectParameterContext(final VersionedParameterContext versionedParameterContext,
+                                                    final Map<String, VersionedParameterContext> versionedParameterContexts,
+                                                    final Map<String, ParameterProviderReference> parameterProviderReferences,
+                                                    final ComponentIdGenerator componentIdGenerator) {
         final ParameterContext contextByName = getParameterContextByName(versionedParameterContext.getName());
         final ParameterContext selectedParameterContext;
         if (contextByName == null) {
             final String parameterContextId = context.getFlowMappingOptions().getComponentIdLookup().getComponentId(Optional.ofNullable(versionedParameterContext.getIdentifier()),
                 versionedParameterContext.getInstanceIdentifier());
-            selectedParameterContext = createParameterContext(versionedParameterContext, parameterContextId, versionedParameterContexts);
+            selectedParameterContext = createParameterContext(versionedParameterContext, parameterContextId, versionedParameterContexts, parameterProviderReferences, componentIdGenerator);
         } else {
             selectedParameterContext = contextByName;
-            addMissingConfiguration(versionedParameterContext, selectedParameterContext, versionedParameterContexts);
+            addMissingConfiguration(versionedParameterContext, selectedParameterContext, versionedParameterContexts, parameterProviderReferences, componentIdGenerator);
         }
 
         return selectedParameterContext;
     }
 
     private void addMissingConfiguration(final VersionedParameterContext versionedParameterContext, final ParameterContext currentParameterContext,
-                                         final Map<String, VersionedParameterContext> versionedParameterContexts) {
+                                         final Map<String, VersionedParameterContext> versionedParameterContexts,
+                                         final Map<String, ParameterProviderReference> parameterProviderReferences,
+                                         final ComponentIdGenerator componentIdGenerator) {
         final Map<String, Parameter> parameters = new HashMap<>();
         for (final VersionedParameter versionedParameter : versionedParameterContext.getParameters()) {
             final Optional<Parameter> parameterOption = currentParameterContext.getParameter(versionedParameter.getName());
@@ -2086,10 +2185,11 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         if (versionedParameterContext.getInheritedParameterContexts() != null && !versionedParameterContext.getInheritedParameterContexts().isEmpty()
             && currentParameterContext.getInheritedParameterContexts().isEmpty()) {
             currentParameterContext.setInheritedParameterContexts(versionedParameterContext.getInheritedParameterContexts().stream()
-                .map(name -> selectParameterContext(versionedParameterContexts.get(name), versionedParameterContexts))
+                .map(name -> selectParameterContext(versionedParameterContexts.get(name), versionedParameterContexts, parameterProviderReferences, componentIdGenerator))
                 .collect(Collectors.toList()));
         }
         if (versionedParameterContext.getParameterProvider() != null && currentParameterContext.getParameterProvider() == null) {
+            createMissingParameterProvider(versionedParameterContext, versionedParameterContext.getParameterProvider(), parameterProviderReferences, componentIdGenerator);
             currentParameterContext.configureParameterProvider(getParameterProviderConfiguration(versionedParameterContext));
         }
     }
@@ -2122,7 +2222,8 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         final int flowVersion = versionedFlowCoordinates.getVersion();
 
         try {
-            final RegisteredFlowSnapshot childSnapshot = flowRegistry.getFlowContents(FlowRegistryClientContextFactory.getAnonymousContext(), bucketId, flowId, flowVersion, false);
+            final FlowSnapshotContainer snapshotContainer = flowRegistry.getFlowContents(FlowRegistryClientContextFactory.getAnonymousContext(), bucketId, flowId, flowVersion, false);
+            final RegisteredFlowSnapshot childSnapshot = snapshotContainer.getFlowSnapshot();
             return childSnapshot.getParameterContexts();
         } catch (final FlowRegistryException e) {
             throw new IllegalArgumentException("The Flow Registry with ID " + registryId + " reports that no Flow exists with Bucket "
@@ -2194,6 +2295,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         funnel.setVersionedComponentId(proposed.getIdentifier());
         destination.addFunnel(funnel);
         updateFunnel(funnel, proposed);
+        connectableAdditionTracker.addComponent(destination.getIdentifier(), proposed.getIdentifier(), funnel);
 
         return funnel;
     }
@@ -2252,7 +2354,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
             final Set<Connectable> toRestart = new HashSet<>();
             if (port != null) {
                 final boolean stopped = stopOrTerminate(port, timeout, synchronizationOptions);
-                if (stopped && proposed != null) {
+                if (stopped && proposed != null && proposed.getScheduledState() == org.apache.nifi.flow.ScheduledState.RUNNING) {
                     toRestart.add(port);
                 }
             }
@@ -2330,6 +2432,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         port.setVersionedComponentId(proposed.getIdentifier());
         destination.addInputPort(port);
         updatePort(port, proposed, temporaryName);
+        connectableAdditionTracker.addComponent(destination.getIdentifier(), proposed.getIdentifier(), port);
 
         return port;
     }
@@ -2348,6 +2451,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         port.setVersionedComponentId(proposed.getIdentifier());
         destination.addOutputPort(port);
         updatePort(port, proposed, temporaryName);
+        connectableAdditionTracker.addComponent(destination.getIdentifier(), proposed.getIdentifier(), port);
 
         return port;
     }
@@ -2373,7 +2477,8 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         }
     }
 
-    private ProcessorNode addProcessor(final ProcessGroup destination, final VersionedProcessor proposed, final ComponentIdGenerator componentIdGenerator) throws ProcessorInstantiationException {
+    private ProcessorNode addProcessor(final ProcessGroup destination, final VersionedProcessor proposed, final ComponentIdGenerator componentIdGenerator,
+                                       final ProcessGroup topLevelGroup) throws ProcessorInstantiationException {
         final String identifier = componentIdGenerator.generateUuid(proposed.getIdentifier(), proposed.getInstanceIdentifier(), destination.getIdentifier());
         LOG.debug("Adding Processor with ID {} of type {}", identifier, proposed.getType());
 
@@ -2382,11 +2487,12 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         procNode.setVersionedComponentId(proposed.getIdentifier());
 
         destination.addProcessor(procNode);
-        updateProcessor(procNode, proposed);
+        updateProcessor(procNode, proposed, topLevelGroup);
 
         // Notify the processor node that the configuration (properties, e.g.) has been restored
         final ProcessContext processContext = context.getProcessContextFactory().apply(procNode);
         procNode.onConfigurationRestored(processContext);
+        connectableAdditionTracker.addComponent(destination.getIdentifier(), proposed.getIdentifier(), procNode);
 
         return procNode;
     }
@@ -2464,6 +2570,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                 verifyCanSynchronize(processor, proposedProcessor, timeout);
 
                 try {
+                    final ProcessGroup topLevelGroup = synchronizationOptions.getTopLevelGroupId() != null ? context.getFlowManager().getGroup(synchronizationOptions.getTopLevelGroupId()) : group;
                     if (proposedProcessor == null) {
                         final Set<Connectable> stoppedDownstream = stopDownstreamComponents(processor, timeout, synchronizationOptions);
                         toRestart.addAll(stoppedDownstream);
@@ -2471,10 +2578,10 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
                         processor.getProcessGroup().removeProcessor(processor);
                         LOG.info("Successfully synchronized {} by removing it from the flow", processor);
                     } else if (processor == null) {
-                        final ProcessorNode added = addProcessor(group, proposedProcessor, synchronizationOptions.getComponentIdGenerator());
+                        final ProcessorNode added = addProcessor(group, proposedProcessor, synchronizationOptions.getComponentIdGenerator(), topLevelGroup);
                         LOG.info("Successfully synchronized {} by adding it to the flow", added);
                     } else {
-                        updateProcessor(processor, proposedProcessor);
+                        updateProcessor(processor, proposedProcessor, topLevelGroup);
                         LOG.info("Successfully synchronized {} by updating it to match proposed version", processor);
                     }
                 } catch (final Exception e) {
@@ -2640,7 +2747,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
     }
 
     private boolean stopProcessor(final ProcessorNode processor, final long timeout) throws FlowSynchronizationException, TimeoutException {
-        if (!processor.isRunning()) {
+        if (!processor.isRunning() && processor.getPhysicalScheduledState() != ScheduledState.STARTING) {
             return false;
         }
 
@@ -2702,7 +2809,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
     }
 
 
-    private void updateProcessor(final ProcessorNode processor, final VersionedProcessor proposed) throws ProcessorInstantiationException {
+    private void updateProcessor(final ProcessorNode processor, final VersionedProcessor proposed, final ProcessGroup topLevelGroup) throws ProcessorInstantiationException {
         LOG.debug("Updating Processor {}", processor);
 
         processor.pauseValidationTrigger();
@@ -2713,8 +2820,15 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
             processor.setName(proposed.getName());
             processor.setPenalizationPeriod(proposed.getPenaltyDuration());
 
+            if (!isEqual(processor.getBundleCoordinate(), proposed.getBundle())) {
+                final BundleCoordinate newBundleCoordinate = toCoordinate(proposed.getBundle());
+                final List<PropertyDescriptor> descriptors = new ArrayList<>(processor.getProperties().keySet());
+                final Set<URL> additionalUrls = processor.getAdditionalClasspathResources(descriptors);
+                context.getReloadComponent().reload(processor, proposed.getType(), newBundleCoordinate, additionalUrls);
+            }
+
             final Set<String> sensitiveDynamicPropertyNames = getSensitiveDynamicPropertyNames(processor, proposed.getProperties(), proposed.getPropertyDescriptors().values());
-            final Map<String, String> properties = populatePropertiesMap(processor, proposed.getProperties(), proposed.getPropertyDescriptors(), processor.getProcessGroup());
+            final Map<String, String> properties = populatePropertiesMap(processor, proposed.getProperties(), proposed.getPropertyDescriptors(), processor.getProcessGroup(), topLevelGroup);
             processor.setProperties(properties, true, sensitiveDynamicPropertyNames);
             processor.setRunDuration(proposed.getRunDurationMillis(), TimeUnit.MILLISECONDS);
             processor.setSchedulingStrategy(SchedulingStrategy.valueOf(proposed.getSchedulingStrategy()));
@@ -2751,13 +2865,6 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
             // Transition state to disabled/enabled/running
             context.getComponentScheduler().transitionComponentState(processor, proposed.getScheduledState());
             notifyScheduledStateChange((ComponentNode) processor, syncOptions, proposed.getScheduledState());
-
-            if (!isEqual(processor.getBundleCoordinate(), proposed.getBundle())) {
-                final BundleCoordinate newBundleCoordinate = toCoordinate(proposed.getBundle());
-                final List<PropertyDescriptor> descriptors = new ArrayList<>(processor.getProperties().keySet());
-                final Set<URL> additionalUrls = processor.getAdditionalClasspathResources(descriptors);
-                context.getReloadComponent().reload(processor, proposed.getType(), newBundleCoordinate, additionalUrls);
-            }
         } finally {
             processor.resumeValidationTrigger();
         }
@@ -2918,6 +3025,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         rpg.setProxyHost(proposed.getProxyHost());
         rpg.setProxyPort(proposed.getProxyPort());
         rpg.setProxyUser(proposed.getProxyUser());
+        rpg.setProxyPassword(decrypt(proposed.getProxyPassword(), syncOptions.getPropertyDecryptor()));
         rpg.setTransportProtocol(SiteToSiteTransportProtocol.valueOf(proposed.getTransportProtocol()));
         rpg.setYieldDuration(proposed.getYieldDuration());
 
@@ -3081,6 +3189,26 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         }
     }
 
+    private Set<Connectable> getUpstreamComponents(final VersionedConnection connection) {
+        if (connection == null) {
+            return Collections.emptySet();
+        }
+
+        final Set<Connectable> components = new HashSet<>();
+        findUpstreamComponents(connection, components);
+        return components;
+    }
+
+    private void findUpstreamComponents(final VersionedConnection connection, final Set<Connectable> components) {
+        final ConnectableComponent sourceConnectable = connection.getSource();
+        final Connectable source = context.getFlowManager().findConnectable(sourceConnectable.getId());
+        if (sourceConnectable.getType() == ConnectableComponentType.FUNNEL) {
+            source.getIncomingConnections().forEach(incoming -> findUpstreamComponents(incoming, components));
+        } else {
+            components.add(source);
+        }
+    }
+
     @Override
     public void synchronize(final Connection connection, final VersionedConnection proposedConnection, final ProcessGroup group, final FlowSynchronizationOptions synchronizationOptions)
         throws FlowSynchronizationException, TimeoutException {
@@ -3092,7 +3220,10 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         final long timeout = System.currentTimeMillis() + synchronizationOptions.getComponentStopTimeout().toMillis();
 
         // Stop any upstream components so that we can update the connection
-        final Set<Connectable> upstream = getUpstreamComponents(connection);
+        final Set<Connectable> upstream = new HashSet<>(getUpstreamComponents(connection));
+        if (connection == null) {
+            upstream.addAll(getUpstreamComponents(proposedConnection));
+        }
         Set<Connectable> stoppedComponents;
         try {
             stoppedComponents = stopOrTerminate(upstream, timeout, synchronizationOptions);
@@ -3268,8 +3399,17 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
         // If we're synchronizing and the component is not available by the instance ID, lookup the component by the ID instead.
         final Connectable connectableById = getConnectable(group, connectableComponent, ConnectableComponent::getId);
-        LOG.debug("Found no connectable in Process Group {} by Instance ID. Lookup by ID {} yielded {}", connectable, connectableComponent.getId(), connectableById);
-        return connectableById;
+        LOG.debug("Found no connectable in Process Group {} by Instance ID. Lookup by ID {} yielded {}", group, connectableComponent.getId(), connectableById);
+        if (connectableById != null) {
+            return connectableById;
+        }
+
+        final Optional<Connectable> addedComponent = connectableAdditionTracker.getComponent(group.getIdentifier(), connectableComponent.getId());
+        if (addedComponent.isPresent()) {
+            LOG.debug("Found Connectable in Process Group {} as newly added component {}", group, addedComponent.get());
+        }
+
+        return addedComponent.orElse(null);
     }
 
     private Connectable getConnectable(final ProcessGroup group, final ConnectableComponent connectableComponent, final Function<ConnectableComponent, String> idFunction) {
@@ -3410,7 +3550,7 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
 
     @Override
     public void synchronize(final ReportingTaskNode reportingTask, final VersionedReportingTask proposed, final FlowSynchronizationOptions synchronizationOptions)
-        throws FlowSynchronizationException, TimeoutException, InterruptedException {
+            throws FlowSynchronizationException, TimeoutException, InterruptedException, ReportingTaskInstantiationException {
 
         if (reportingTask == null && proposed == null) {
             return;
@@ -3439,14 +3579,15 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
         }
     }
 
-    private ReportingTaskNode addReportingTask(final VersionedReportingTask reportingTask) {
+    private ReportingTaskNode addReportingTask(final VersionedReportingTask reportingTask) throws ReportingTaskInstantiationException {
         final BundleCoordinate coordinate = toCoordinate(reportingTask.getBundle());
         final ReportingTaskNode taskNode = context.getFlowManager().createReportingTask(reportingTask.getType(), reportingTask.getInstanceIdentifier(), coordinate, false);
         updateReportingTask(taskNode, reportingTask);
         return taskNode;
     }
 
-    private void updateReportingTask(final ReportingTaskNode reportingTask, final VersionedReportingTask proposed) {
+    private void updateReportingTask(final ReportingTaskNode reportingTask, final VersionedReportingTask proposed)
+            throws ReportingTaskInstantiationException {
         LOG.debug("Updating Reporting Task {}", reportingTask);
 
         reportingTask.pauseValidationTrigger();
@@ -3455,8 +3596,15 @@ public class StandardVersionedComponentSynchronizer implements VersionedComponen
             reportingTask.setComments(proposed.getComments());
             reportingTask.setSchedulingPeriod(proposed.getSchedulingPeriod());
             reportingTask.setSchedulingStrategy(SchedulingStrategy.valueOf(proposed.getSchedulingStrategy()));
-
             reportingTask.setAnnotationData(proposed.getAnnotationData());
+
+            if (!isEqual(reportingTask.getBundleCoordinate(), proposed.getBundle())) {
+                final BundleCoordinate newBundleCoordinate = toCoordinate(proposed.getBundle());
+                final List<PropertyDescriptor> descriptors = new ArrayList<>(reportingTask.getProperties().keySet());
+                final Set<URL> additionalUrls = reportingTask.getAdditionalClasspathResources(descriptors);
+                context.getReloadComponent().reload(reportingTask, proposed.getType(), newBundleCoordinate, additionalUrls);
+            }
+
             final Set<String> sensitiveDynamicPropertyNames = getSensitiveDynamicPropertyNames(reportingTask, proposed.getProperties(), proposed.getPropertyDescriptors().values());
             reportingTask.setProperties(proposed.getProperties(), false, sensitiveDynamicPropertyNames);
 

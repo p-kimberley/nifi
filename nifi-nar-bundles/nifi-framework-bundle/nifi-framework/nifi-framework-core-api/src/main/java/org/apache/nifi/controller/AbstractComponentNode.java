@@ -462,17 +462,17 @@ public abstract class AbstractComponentNode implements ComponentNode {
     // Keep setProperty/removeProperty private so that all calls go through setProperties
     private void setProperty(final PropertyDescriptor descriptor, final PropertyConfiguration propertyConfiguration, final Function<PropertyDescriptor, PropertyConfiguration> valueToCompareFunction) {
         // Remove current PropertyDescriptor to force updated instance references
-        properties.remove(descriptor);
+        final PropertyConfiguration removed = properties.remove(descriptor);
 
         final PropertyConfiguration propertyModComparisonValue = valueToCompareFunction.apply(descriptor);
-        final PropertyConfiguration oldConfiguration = properties.put(descriptor, propertyConfiguration);
+        properties.put(descriptor, propertyConfiguration);
         final String effectiveValue = propertyConfiguration.getEffectiveValue(getParameterContext());
 
         // If the property references a Controller Service, we need to register this component & property descriptor as a reference.
         // If it previously referenced a Controller Service, we need to also remove that reference.
         // It is okay if the new & old values are the same - we just unregister the component/descriptor and re-register it.
         if (descriptor.getControllerServiceDefinition() != null) {
-            Optional.ofNullable(oldConfiguration)
+            Optional.ofNullable(removed)
                 .map(_oldConfiguration -> _oldConfiguration.getEffectiveValue(getParameterContext()))
                 .map(oldEffectiveValue -> serviceProvider.getControllerServiceNode(oldEffectiveValue))
                 .ifPresent(oldNode -> oldNode.removeReference(this, descriptor));
@@ -580,11 +580,15 @@ public abstract class AbstractComponentNode implements ComponentNode {
             final Map<PropertyDescriptor, String> props = new LinkedHashMap<>();
             for (final PropertyDescriptor descriptor : supported) {
                 if (descriptor != null) {
-                    props.put(descriptor, descriptor.getDefaultValue());
+                    final PropertyDescriptor upToDateDescriptor = getPropertyDescriptor(descriptor.getName());
+                    props.put(upToDateDescriptor, upToDateDescriptor.getDefaultValue());
                 }
             }
 
-            properties.forEach((descriptor, config) -> props.put(getPropertyDescriptor(descriptor.getName()), valueFunction.apply(descriptor, config)));
+            properties.forEach((descriptor, config) -> {
+                final PropertyDescriptor upToDateDescriptor = getPropertyDescriptor(descriptor.getName());
+                props.put(upToDateDescriptor, valueFunction.apply(upToDateDescriptor, config));
+            });
             return props;
         }
     }
@@ -598,6 +602,14 @@ public abstract class AbstractComponentNode implements ComponentNode {
     @Override
     public String getEffectivePropertyValue(final PropertyDescriptor property) {
         return getProperty(property).getEffectiveValue(getParameterContext());
+    }
+
+    private String getEffectivePropertyValueWithDefault(final PropertyDescriptor property) {
+        String value = getProperty(property).getEffectiveValue(getParameterContext());
+        if (value == null) {
+            value = property.getDefaultValue();
+        }
+        return value;
     }
 
     @Override
@@ -658,23 +670,23 @@ public abstract class AbstractComponentNode implements ComponentNode {
      */
     @Override
     public synchronized void reloadAdditionalResourcesIfNecessary() {
-        // Components that don't have any PropertyDescriptors marked `dynamicallyModifiesClasspath`
-        // won't have the fingerprint i.e. will be null, in such cases do nothing
-        if (additionalResourcesFingerprint == null) {
-            return;
-        }
-
         final Set<PropertyDescriptor> descriptors = this.getProperties().keySet();
-        final Set<URL> additionalUrls = this.getAdditionalClasspathResources(descriptors);
 
-        final String newFingerprint = ClassLoaderUtils.generateAdditionalUrlsFingerprint(additionalUrls, determineClasloaderIsolationKey());
-        if(!StringUtils.equals(additionalResourcesFingerprint, newFingerprint)) {
-            setAdditionalResourcesFingerprint(newFingerprint);
-            try {
-                logger.info("Updating classpath for " + this.componentType + " with the ID " + this.getIdentifier());
-                reload(additionalUrls);
-            } catch (Exception e) {
-                logger.error("Error reloading component with id " + id + ": " + e.getMessage(), e);
+        final boolean dynamicallyModifiesClasspath = descriptors.stream()
+                .anyMatch(PropertyDescriptor::isDynamicClasspathModifier);
+
+        if (dynamicallyModifiesClasspath) {
+            final Set<URL> additionalUrls = this.getAdditionalClasspathResources(descriptors, this::getEffectivePropertyValueWithDefault);
+
+            final String newFingerprint = ClassLoaderUtils.generateAdditionalUrlsFingerprint(additionalUrls, determineClasloaderIsolationKey());
+            if (!StringUtils.equals(additionalResourcesFingerprint, newFingerprint)) {
+                setAdditionalResourcesFingerprint(newFingerprint);
+                try {
+                    logger.info("Updating classpath for [{}] with the ID [{}]", this.componentType, this.getIdentifier());
+                    reload(additionalUrls);
+                } catch (Exception e) {
+                    logger.error("Error reloading component with id [{}]: {}", id, e.getMessage(), e);
+                }
             }
         }
     }
@@ -1389,4 +1401,5 @@ public abstract class AbstractComponentNode implements ComponentNode {
     public boolean isReferencingParameter(final String parameterName) {
         return parameterReferenceCounts.containsKey(parameterName);
     }
+
 }

@@ -21,6 +21,7 @@ import com.google.api.core.ApiFutures;
 import com.google.api.gax.batching.BatchingSettings;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.rpc.ApiException;
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.pubsublite.TopicPath;
 import com.google.cloud.pubsublite.cloudpubsub.Publisher;
 import com.google.cloud.pubsublite.cloudpubsub.PublisherSettings;
@@ -75,14 +76,13 @@ import static org.apache.nifi.processors.gcp.pubsub.PubSubAttributes.MESSAGE_ID_
 import static org.apache.nifi.processors.gcp.pubsub.PubSubAttributes.MESSAGE_ID_DESCRIPTION;
 import static org.apache.nifi.processors.gcp.pubsub.PubSubAttributes.TOPIC_NAME_ATTRIBUTE;
 import static org.apache.nifi.processors.gcp.pubsub.PubSubAttributes.TOPIC_NAME_DESCRIPTION;
+import static org.apache.nifi.processors.gcp.util.GoogleUtils.GOOGLE_CLOUD_PLATFORM_SCOPE;
 
 @SeeAlso({ConsumeGCPubSubLite.class})
 @InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"google", "google-cloud", "gcp", "message", "pubsub", "publish", "lite"})
-@CapabilityDescription("Publishes the content of the incoming flowfile to the configured Google Cloud PubSub Lite topic. The processor supports dynamic properties." +
-        " If any dynamic properties are present, they will be sent along with the message in the form of 'attributes'. In its current state, this processor will " +
-        "only work if running on a Google Cloud Compute Engine instance and if using the GCP Credentials Controller Service with 'Use Application Default " +
-        "Credentials' or 'Use Compute Engine Credentials'.")
+@CapabilityDescription("Publishes the content of the incoming FlowFile to the configured Google Cloud PubSub Lite topic. The processor supports dynamic properties." +
+        " If any dynamic properties are present, they will be sent along with the message in the form of 'attributes'.")
 @DynamicProperty(name = "Attribute name", value = "Value to be set to the attribute",
         description = "Attributes to be set for the outgoing Google Cloud PubSub Lite message", expressionLanguageScope = ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
 @WritesAttributes({
@@ -112,17 +112,6 @@ public class PublishGCPubSubLite extends AbstractGCPubSubProcessor implements Ve
             .addValidator(StandardValidators.NON_BLANK_VALIDATOR)
             .build();
 
-    public static final PropertyDescriptor BATCH_BYTES = new PropertyDescriptor
-            .Builder().name("gcp-batch-bytes")
-            .displayName("Batch Bytes Threshold")
-            .description("Publish request gets triggered based on this Batch Bytes Threshold property and"
-                    + " the " + BATCH_SIZE.getDisplayName() + " property, whichever condition is met first.")
-            .required(true)
-            .defaultValue("3 MB")
-            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
-            .addValidator(StandardValidators.DATA_SIZE_VALIDATOR)
-            .build();
-
     private Publisher publisher = null;
 
     @Override
@@ -130,8 +119,9 @@ public class PublishGCPubSubLite extends AbstractGCPubSubProcessor implements Ve
         return Collections.unmodifiableList(Arrays.asList(TOPIC_NAME,
                 GCP_CREDENTIALS_PROVIDER_SERVICE,
                 ORDERING_KEY,
-                BATCH_SIZE,
-                BATCH_BYTES));
+                BATCH_SIZE_THRESHOLD,
+                BATCH_BYTES_THRESHOLD,
+                BATCH_DELAY_THRESHOLD));
     }
 
     @Override
@@ -193,7 +183,7 @@ public class PublishGCPubSubLite extends AbstractGCPubSubProcessor implements Ve
 
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) throws ProcessException {
-        final int flowFileCount = context.getProperty(BATCH_SIZE).asInteger();
+        final int flowFileCount = context.getProperty(BATCH_SIZE_THRESHOLD).asInteger();
         final List<FlowFile> flowFiles = session.get(flowFileCount);
 
         if (flowFiles.isEmpty()) {
@@ -290,9 +280,9 @@ public class PublishGCPubSubLite extends AbstractGCPubSubProcessor implements Ve
                     .setTopicPath(topicPath)
                     .setCredentialsProvider(FixedCredentialsProvider.create(getGoogleCredentials(context)))
                     .setBatchingSettings(BatchingSettings.newBuilder()
-                            .setElementCountThreshold(context.getProperty(BATCH_SIZE).asLong())
-                            .setDelayThreshold(Duration.ofMillis(100))
-                            .setRequestByteThreshold(context.getProperty(BATCH_BYTES).asDataSize(DataUnit.B).longValue())
+                            .setElementCountThreshold(context.getProperty(BATCH_SIZE_THRESHOLD).asLong())
+                            .setRequestByteThreshold(context.getProperty(BATCH_BYTES_THRESHOLD).asDataSize(DataUnit.B).longValue())
+                            .setDelayThreshold(Duration.ofMillis(context.getProperty(BATCH_DELAY_THRESHOLD).asTimePeriod(TimeUnit.MILLISECONDS)))
                             .setIsEnabled(true)
                             .build())
                     .build();
@@ -320,5 +310,10 @@ public class PublishGCPubSubLite extends AbstractGCPubSubProcessor implements Ve
                     .build());
         }
         return verificationResults;
+    }
+
+    @Override
+    protected GoogleCredentials getGoogleCredentials(final ProcessContext context) {
+        return super.getGoogleCredentials(context).createScoped(GOOGLE_CLOUD_PLATFORM_SCOPE);
     }
 }

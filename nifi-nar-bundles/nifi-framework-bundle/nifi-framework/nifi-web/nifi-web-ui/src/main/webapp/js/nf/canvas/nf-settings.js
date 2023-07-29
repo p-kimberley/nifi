@@ -960,9 +960,9 @@
         }).done(function (response) {
             var id = 0;
             var tags = [];
-            var groups = d3.set();
-            var restrictedUsage = d3.map();
-            var requiredPermissions = d3.map();
+            var groups = new Set();
+            var restrictedUsage = new Map();
+            var requiredPermissions = new Map();
 
             // begin the update
             reportingTaskTypesData.beginUpdate();
@@ -1056,7 +1056,7 @@
                 text: 'all groups',
                 value: ''
             }];
-            groups.each(function (group) {
+            groups.forEach(function (group) {
                 options.push({
                     text: group,
                     value: group
@@ -1362,9 +1362,9 @@
         }).done(function (response) {
             var id = 0;
             var tags = [];
-            var groups = d3.set();
-            var restrictedUsage = d3.map();
-            var requiredPermissions = d3.map();
+            var groups = new Set();
+            var restrictedUsage = new Map();
+            var requiredPermissions = new Map();
 
             // begin the update
             parameterProviderTypesData.beginUpdate();
@@ -1458,7 +1458,7 @@
                 text: 'all groups',
                 value: ''
             }];
-            groups.each(function (group) {
+            groups.forEach(function (group) {
                 options.push({
                     text: group,
                     value: group
@@ -1594,8 +1594,13 @@
             // always include a button to view the usage
             markup += '<div title="Usage" class="pointer reporting-task-usage fa fa-book"></div>';
 
+            var hasComments = !nfCommon.isBlank(dataContext.component.comments);
             var hasErrors = !nfCommon.isEmpty(dataContext.component.validationErrors);
             var hasBulletins = !nfCommon.isEmpty(dataContext.bulletins);
+
+            if (hasComments) {
+            	markup += '<div class="pointer has-comments fa fa-comment"></div>';
+            }
 
             if (hasErrors) {
                 markup += '<div class="pointer has-errors fa fa-warning" ></div>';
@@ -1605,7 +1610,7 @@
                 markup += '<div class="has-bulletins fa fa-sticky-note-o"></div>';
             }
 
-            if (hasErrors || hasBulletins) {
+            if (hasComments || hasErrors || hasBulletins) {
                 markup += '<span class="hidden row-id">' + nfCommon.escapeHtml(dataContext.component.id) + '</span>';
             }
 
@@ -1698,8 +1703,8 @@
                 resizable: false,
                 formatter: moreReportingTaskDetails,
                 sortable: true,
-                width: 90,
-                maxWidth: 90,
+                width: 100,
+                maxWidth: 100,
                 toolTip: 'Sorts based on presence of bulletins'
             },
             {
@@ -1829,6 +1834,36 @@
 
         // hold onto an instance of the grid
         $('#reporting-tasks-table').data('gridInstance', reportingTasksGrid).on('mouseenter', 'div.slick-cell', function (e) {
+            var commentsIcon = $(this).find('div.has-comments');
+            if (commentsIcon.length && !commentsIcon.data('qtip')) {
+                 var taskId = $(this).find('span.row-id').text();
+
+                // get the task item
+                var reportingTaskEntity = reportingTasksData.getItemById(taskId);
+
+                // format the tooltip
+                var comments = nfCommon.escapeHtml(reportingTaskEntity.component.comments);
+                var tooltip = nfCommon.formatNewLines(comments);
+
+                // show the tooltip
+                if (nfCommon.isDefinedAndNotNull(tooltip)) {
+                    commentsIcon.qtip($.extend({},
+                        nfCommon.config.tooltipConfig,
+                        {
+                            content: tooltip,
+                            position: {
+                                target: 'mouse',
+                                viewport: $('#shell-container'),
+                                adjust: {
+                                    x: 8,
+                                    y: 8,
+                                    method: 'flipinvert flipinvert'
+                                }
+                            }
+                        }));
+                }
+            }
+
             var errorIcon = $(this).find('div.has-errors');
             if (errorIcon.length && !errorIcon.data('qtip')) {
                 var taskId = $(this).find('span.row-id').text();
@@ -1993,6 +2028,22 @@
                 name: 'Description',
                 field: 'description',
                 formatter: descriptionFormatter,
+                sortable: true,
+                resizable: true
+            },
+            {
+                id: 'type',
+                name: 'Type',
+                field: 'type',
+                formatter: nfCommon.instanceTypeFormatter,
+                sortable: true,
+                resizable: true
+            },
+            {
+                id: 'bundle',
+                name: 'Bundle',
+                field: 'bundle',
+                formatter: nfCommon.instanceBundleFormatter,
                 sortable: true,
                 resizable: true
             }
@@ -2543,6 +2594,7 @@
             });
 
             var reportingTasksElement = $('#reporting-tasks-table');
+            nfCommon.cleanUpTooltips(reportingTasksElement, 'div.has-comments');
             nfCommon.cleanUpTooltips(reportingTasksElement, 'div.has-errors');
             nfCommon.cleanUpTooltips(reportingTasksElement, 'div.has-bulletins');
 
@@ -2625,7 +2677,7 @@
             var regTypeOptions = [];
             response.flowRegistryClientTypes.forEach(function (type) {
                 regTypeOptions.push({
-                    text: nfCommon.substringAfterLast(type.type, '.'),
+                    text: nfCommon.substringAfterLast(type.type, '.') + ' (' + type.bundle.version + ')',
                     value: type.type,
                     description: type.description || ''
                 });
@@ -2963,6 +3015,10 @@
             if (nfCommon.isDefinedAndNotNull(parameterProvidersGrid)) {
                 parameterProvidersGrid.resizeCanvas();
             }
+            var registriesGrid = $('#registries-table').data('gridInstance');
+            if (nfCommon.isDefinedAndNotNull(registriesGrid)) {
+                registriesGrid.resizeCanvas();
+            }
         },
 
         /**
@@ -3033,13 +3089,9 @@
 
             // if there are some bulletins process them
             if (!nfCommon.isEmpty(reportingTaskBulletins)) {
-                var reportingTaskBulletinsBySource = d3.nest()
-                    .key(function (d) {
-                        return d.sourceId;
-                    })
-                    .map(reportingTaskBulletins, d3.map);
+                var reportingTaskBulletinsBySource = new Map(reportingTaskBulletins.map(function(d) { return [d.sourceId, d]; }));
 
-                reportingTaskBulletinsBySource.each(function (sourceBulletins, sourceId) {
+                reportingTaskBulletinsBySource.forEach(function (sourceBulletins, sourceId) {
                     var reportingTask = reportingTasksData.getItemById(sourceId);
                     if (nfCommon.isDefinedAndNotNull(reportingTask)) {
                         reportingTasksData.updateItem(sourceId, $.extend(reportingTask, {

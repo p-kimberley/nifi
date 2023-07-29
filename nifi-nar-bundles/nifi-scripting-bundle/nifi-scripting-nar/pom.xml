@@ -19,7 +19,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-scripting-bundle</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
     <artifactId>nifi-scripting-nar</artifactId>
@@ -27,7 +27,7 @@
     <properties>
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <source.skip>true</source.skip>
-        <ant.version>1.10.12</ant.version>
+        <ant.version>1.10.13</ant.version>
     </properties>
 
     <dependencies>
@@ -38,7 +38,7 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-standard-services-api-nar</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <type>nar</type>
         </dependency>
         
@@ -46,6 +46,14 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-metrics</artifactId>
+            <type>jar</type>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- nifi-avro-record-utils dependency to include in the NAR for processor to use at runtime -->
+        <dependency>
+            <groupId>org.apache.nifi</groupId>
+            <artifactId>nifi-avro-record-utils</artifactId>
             <type>jar</type>
             <scope>runtime</scope>
         </dependency>

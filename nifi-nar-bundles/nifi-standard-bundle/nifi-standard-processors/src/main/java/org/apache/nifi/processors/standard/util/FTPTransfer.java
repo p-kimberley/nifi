@@ -50,7 +50,6 @@ import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
-import org.apache.nifi.processors.standard.util.FileTransfer;
 import org.apache.nifi.processors.standard.ftp.FTPClientProvider;
 import org.apache.nifi.processors.standard.ftp.StandardFTPClientProvider;
 import org.apache.nifi.proxy.ProxyConfiguration;
@@ -396,7 +395,7 @@ public class FTPTransfer implements FileTransfer {
         if (!cdSuccessful) {
             if (client.makeDirectory(remoteDirectory)) {
                 logger.debug("Remote Directory not found: created directory [{}]", remoteDirectory);
-            } else {
+            } else if (!setWorkingDirectory(remoteDirectory)) { // Double check that the dir exists as it might have been created in another thread
                 throw new IOException("Failed to create remote directory " + remoteDirectory);
             }
         }

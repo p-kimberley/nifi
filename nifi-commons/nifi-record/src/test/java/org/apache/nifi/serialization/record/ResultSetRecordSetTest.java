@@ -42,7 +42,6 @@ import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -52,10 +51,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -310,9 +309,7 @@ public class ResultSetRecordSetTest {
         assertEquals(booleanValue, record.getAsBoolean(COLUMN_NAME_BOOLEAN));
         assertEquals(charValue, record.getValue(COLUMN_NAME_CHAR));
 
-        // Date is expected in UTC normalized form
-        Date expectedDate = new Date(testDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli());
-        assertEquals(expectedDate, record.getAsDate(COLUMN_NAME_DATE, null));
+        assertEquals(dateValue, record.getAsDate(COLUMN_NAME_DATE, null));
         assertEquals(timestampValue, DataTypeUtils.toTimestamp(record.getValue(COLUMN_NAME_TIMESTAMP), null, COLUMN_NAME_TIMESTAMP));
 
         assertEquals(integerValue, record.getAsInt(COLUMN_NAME_INTEGER));
@@ -589,7 +586,7 @@ public class ResultSetRecordSetTest {
         List<RecordField> fields = new ArrayList<>(concreteRecords.size());
         int i = 1;
         for (Record record : concreteRecords) {
-            fields.add(new RecordField("record" + String.valueOf(i), RecordFieldType.RECORD.getRecordDataType(record.getSchema())));
+            fields.add(new RecordField("record" + i, RecordFieldType.RECORD.getRecordDataType(record.getSchema())));
             ++i;
         }
         return fields;
@@ -614,7 +611,7 @@ public class ResultSetRecordSetTest {
     }
 
     private void thenAllDataTypesMatchInputFieldType(final List<RecordField> inputFields, final RecordSchema resultSchema) {
-        assertEquals("The number of input fields does not match the number of fields in the result schema.", inputFields.size(), resultSchema.getFieldCount());
+        assertEquals(inputFields.size(), resultSchema.getFieldCount(), "The number of input fields does not match the number of fields in the result schema.");
         for (int i = 0; i < inputFields.size(); ++i) {
             assertEquals(inputFields.get(i).getDataType(), resultSchema.getField(i).getDataType());
         }
@@ -640,7 +637,7 @@ public class ResultSetRecordSetTest {
                     expectedDataType = RecordFieldType.DECIMAL.getDecimalDataType(decimalDataType.getScale(), decimalDataType.getScale());
                 }
             }
-            assertEquals("For column " + column.getIndex() + " the converted type is not matching", expectedDataType, actualDataType);
+            assertEquals(expectedDataType, actualDataType, "For column " + column.getIndex() + " the converted type is not matching");
         }
     }
 
@@ -648,9 +645,9 @@ public class ResultSetRecordSetTest {
         for (RecordField recordField : actualSchema.getFields()) {
             if (recordField.getDataType() instanceof ArrayDataType) {
                 ArrayDataType arrayType = (ArrayDataType) recordField.getDataType();
-                assertEquals("Array element type for " + recordField.getFieldName()
-                                + " is not of expected type " + expectedTypes.get(recordField.getFieldName()).toString(),
-                        expectedTypes.get(recordField.getFieldName()), arrayType.getElementType());
+                assertEquals(expectedTypes.get(recordField.getFieldName()), arrayType.getElementType(),
+                        "Array element type for " + recordField.getFieldName()
+                                + " is not of expected type " + expectedTypes.get(recordField.getFieldName()).toString());
             } else {
                 fail("RecordField " + recordField.getFieldName() + " is not instance of ArrayDataType");
             }
@@ -658,7 +655,7 @@ public class ResultSetRecordSetTest {
     }
 
     private void thenAllDataTypesAreChoice(final List<RecordField> inputFields, final RecordSchema resultSchema) {
-        assertEquals("The number of input fields does not match the number of fields in the result schema.", inputFields.size(), resultSchema.getFieldCount());
+        assertEquals(inputFields.size(), resultSchema.getFieldCount(), "The number of input fields does not match the number of fields in the result schema.");
 
         DataType expectedType = getBroadestChoiceDataType();
         for (int i = 0; i < inputFields.size(); ++i) {

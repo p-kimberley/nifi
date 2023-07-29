@@ -18,6 +18,7 @@
 package org.apache.nifi.processors.standard;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.annotation.behavior.DynamicProperty;
 import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
@@ -86,6 +87,9 @@ import java.util.concurrent.atomic.AtomicInteger;
         + "all the fields of the parent records from the root level to the extracted record. This assumes that the fields to add in "
         + "the record are defined in the schema of the Record Writer controller service. See examples in the additional details "
         + "documentation of this processor.")
+@DynamicProperty(name = "Record Path property", value = "The Record Path value",
+        expressionLanguageScope = ExpressionLanguageScope.FLOWFILE_ATTRIBUTES,
+        description = "A Record Path value, pointing to a field of type ARRAY containing RECORD objects")
 @WritesAttributes({
     @WritesAttribute(attribute = "record.count", description = "The generated FlowFile will have a 'record.count' attribute indicating "
             + "the number of records that were written to the FlowFile."),
@@ -263,9 +267,12 @@ public class ForkRecord extends AbstractProcessor {
                                         RecordFieldType fieldType = fieldValue.getField().getDataType().getFieldType();
 
                                         // we want to have an array here, nothing else allowed
-                                        if(fieldType != RecordFieldType.ARRAY) {
-                                            getLogger().debug("The record path " + recordPath.getPath() + " is matching a field "
-                                                    + "of type " + fieldType + " when the type ARRAY is expected.");
+                                        if (fieldType != RecordFieldType.ARRAY) {
+                                            getLogger().debug("The record path {} is matching a field of type {} when the type ARRAY is expected.", recordPath.getPath(), fieldType);
+                                            continue;
+                                        }
+                                        if (fieldValue.getValue() == null) {
+                                            getLogger().debug("The record path {} is matching a field the value of which is null.", recordPath.getPath());
                                             continue;
                                         }
 
@@ -284,9 +291,9 @@ public class ForkRecord extends AbstractProcessor {
                                             final DataType elementType = arrayDataType.getElementType();
 
                                             // we want to have records in the array
-                                            if(elementType.getFieldType() != RecordFieldType.RECORD) {
-                                                getLogger().debug("The record path " + recordPath.getPath() + " is matching an array field with "
-                                                        + "values of type " + elementType.getFieldType() + " when the type RECORD is expected.");
+                                            if (elementType.getFieldType() != RecordFieldType.RECORD) {
+                                                getLogger().debug("The record path {} is matching an array field with values of type {} " +
+                                                        "when the type RECORD is expected.", recordPath.getPath(), elementType.getFieldType());
                                                 continue;
                                             }
 
@@ -321,7 +328,7 @@ public class ForkRecord extends AbstractProcessor {
                             try {
                                 recordSetWriter.close();
                             } catch (final IOException ioe) {
-                                getLogger().warn("Failed to close Writer for {}", new Object[] {outFlowFile});
+                                getLogger().warn("Failed to close Writer for {}", outFlowFile);
                             }
 
                             final Map<String, String> attributes = new HashMap<>();
@@ -363,7 +370,7 @@ public class ForkRecord extends AbstractProcessor {
             });
 
         } catch (Exception e) {
-            getLogger().error("Failed to fork {}", new Object[] {flowFile, e});
+            getLogger().error("Failed to fork {}", flowFile, e);
             session.remove(outFlowFile);
             session.transfer(original, REL_FAILURE);
             return;
@@ -371,7 +378,7 @@ public class ForkRecord extends AbstractProcessor {
 
         session.adjustCounter("Records Processed", readCount.get(), false);
         session.adjustCounter("Records Generated", writeCount.get(), false);
-        getLogger().debug("Successfully forked {} records into {} records in {}", new Object[] {readCount.get(), writeCount.get(), flowFile});
+        getLogger().debug("Successfully forked {} records into {} records in {}", readCount.get(), writeCount.get(), flowFile);
         session.transfer(original, REL_ORIGINAL);
     }
 

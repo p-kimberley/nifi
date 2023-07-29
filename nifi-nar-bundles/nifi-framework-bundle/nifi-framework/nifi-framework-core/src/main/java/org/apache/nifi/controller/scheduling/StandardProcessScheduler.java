@@ -20,6 +20,7 @@ import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnShutdown;
 import org.apache.nifi.annotation.lifecycle.OnStopped;
 import org.apache.nifi.annotation.lifecycle.OnUnscheduled;
+import org.apache.nifi.annotation.notification.PrimaryNodeState;
 import org.apache.nifi.components.state.StateManager;
 import org.apache.nifi.components.state.StateManagerProvider;
 import org.apache.nifi.components.validation.ValidationStatus;
@@ -42,6 +43,7 @@ import org.apache.nifi.controller.service.ControllerServiceProvider;
 import org.apache.nifi.controller.service.StandardConfigurationContext;
 import org.apache.nifi.engine.FlowEngine;
 import org.apache.nifi.logging.ComponentLog;
+import org.apache.nifi.logging.StandardLoggingContext;
 import org.apache.nifi.nar.NarCloseable;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.Processor;
@@ -56,8 +58,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.InvocationTargetException;
-import java.util.Collections;
+import java.net.URL;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -242,7 +245,7 @@ public final class StandardProcessScheduler implements ProcessScheduler {
                     }
                 } catch (final Exception e) {
                     final Throwable cause = e instanceof InvocationTargetException ? e.getCause() : e;
-                    final ComponentLog componentLog = new SimpleProcessLogger(reportingTask.getIdentifier(), reportingTask);
+                    final ComponentLog componentLog = new SimpleProcessLogger(reportingTask.getIdentifier(), reportingTask, new StandardLoggingContext(null));
                     componentLog.error("Failed to invoke @OnScheduled method due to {}", cause);
 
                     LOG.error("Failed to invoke the On-Scheduled Lifecycle methods of {} due to {}; administratively yielding this "
@@ -295,7 +298,7 @@ public final class StandardProcessScheduler implements ProcessScheduler {
                         ReflectionUtils.invokeMethodsWithAnnotation(OnUnscheduled.class, reportingTask, configurationContext);
                     } catch (final Exception e) {
                         final Throwable cause = e instanceof InvocationTargetException ? e.getCause() : e;
-                        final ComponentLog componentLog = new SimpleProcessLogger(reportingTask.getIdentifier(), reportingTask);
+                        final ComponentLog componentLog = new SimpleProcessLogger(reportingTask.getIdentifier(), reportingTask, new StandardLoggingContext(null));
                         componentLog.error("Failed to invoke @OnUnscheduled method due to {}", cause);
 
                         LOG.error("Failed to invoke the @OnUnscheduled methods of {} due to {}; administratively yielding this ReportingTask and will attempt to schedule it again after {}",
@@ -434,19 +437,37 @@ public final class StandardProcessScheduler implements ProcessScheduler {
 
         LOG.debug("Terminating {}", procNode);
 
-        final int tasksTerminated = procNode.terminate();
         state.terminate();
+        final int tasksTerminated = procNode.terminate();
 
         getSchedulingAgent(procNode).incrementMaxThreadCount(tasksTerminated);
 
         try {
-            flowController.getReloadComponent().reload(procNode, procNode.getProcessor().getClass().getName(), procNode.getBundleCoordinate(), Collections.emptySet());
+            final Set<URL> additionalUrls = procNode.getAdditionalClasspathResources(procNode.getPropertyDescriptors());
+            flowController.getReloadComponent().reload(procNode, procNode.getProcessor().getClass().getName(), procNode.getBundleCoordinate(), additionalUrls);
         } catch (final ProcessorInstantiationException e) {
             // This shouldn't happen because we already have been able to instantiate the processor before
             LOG.error("Failed to replace instance of Processor for {} when terminating Processor", procNode);
         }
 
         LOG.info("Successfully terminated {} with {} active threads", procNode, tasksTerminated);
+    }
+
+    @Override
+    public void notifyPrimaryNodeStateChange(final ProcessorNode processor, final PrimaryNodeState primaryNodeState) {
+        final LifecycleState lifecycleState = getLifecycleState(processor, false);
+        processor.notifyPrimaryNodeChanged(primaryNodeState, lifecycleState);
+    }
+
+    @Override
+    public void notifyPrimaryNodeStateChange(final ReportingTaskNode taskNode, final PrimaryNodeState primaryNodeState) {
+        final LifecycleState lifecycleState = getLifecycleState(taskNode, false);
+        taskNode.notifyPrimaryNodeChanged(primaryNodeState, lifecycleState);
+    }
+
+    @Override
+    public void notifyPrimaryNodeStateChange(final ControllerServiceNode service, final PrimaryNodeState primaryNodeState) {
+        service.notifyPrimaryNodeChanged(primaryNodeState);
     }
 
     @Override

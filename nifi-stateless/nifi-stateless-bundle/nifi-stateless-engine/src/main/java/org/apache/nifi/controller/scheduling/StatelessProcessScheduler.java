@@ -19,6 +19,7 @@ package org.apache.nifi.controller.scheduling;
 
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnShutdown;
+import org.apache.nifi.annotation.notification.PrimaryNodeState;
 import org.apache.nifi.components.validation.ValidationStatus;
 import org.apache.nifi.connectable.Connectable;
 import org.apache.nifi.connectable.Funnel;
@@ -47,6 +48,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.InvocationTargetException;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -62,7 +64,6 @@ import java.util.function.Supplier;
 public class StatelessProcessScheduler implements ProcessScheduler {
     private static final Logger logger = LoggerFactory.getLogger(StatelessProcessScheduler.class);
     private static final int ADMINISTRATIVE_YIELD_MILLIS = 1000;
-    private static final int PROCESSOR_START_TIMEOUT_MILLIS = 10_000;
 
     private final SchedulingAgent schedulingAgent;
     private final ExtensionManager extensionManager;
@@ -71,8 +72,11 @@ public class StatelessProcessScheduler implements ProcessScheduler {
     private ScheduledExecutorService componentMonitoringThreadPool;
     private ProcessContextFactory processContextFactory;
 
-    public StatelessProcessScheduler(final ExtensionManager extensionManager) {
+    private final long processorStartTimeoutMillis;
+
+    public StatelessProcessScheduler(final ExtensionManager extensionManager, final Duration processorStartTimeout) {
         this.extensionManager = extensionManager;
+        this.processorStartTimeoutMillis = processorStartTimeout.toMillis();
         schedulingAgent = new StatelessSchedulingAgent(extensionManager);
     }
 
@@ -135,7 +139,7 @@ public class StatelessProcessScheduler implements ProcessScheduler {
         logger.info("Starting {}", procNode);
 
         final Supplier<ProcessContext> processContextSupplier = () -> processContextFactory.createProcessContext(procNode);
-        procNode.start(componentMonitoringThreadPool, ADMINISTRATIVE_YIELD_MILLIS, PROCESSOR_START_TIMEOUT_MILLIS, processContextSupplier, callback, failIfStopping);
+        procNode.start(componentMonitoringThreadPool, ADMINISTRATIVE_YIELD_MILLIS, this.processorStartTimeoutMillis, processContextSupplier, callback, failIfStopping);
         return future;
 
     }
@@ -315,5 +319,17 @@ public class StatelessProcessScheduler implements ProcessScheduler {
     @Override
     public Future<?> submitFrameworkTask(final Runnable task) {
         return null;
+    }
+
+    @Override
+    public void notifyPrimaryNodeStateChange(final ProcessorNode processor, final PrimaryNodeState primaryNodeState) {
+    }
+
+    @Override
+    public void notifyPrimaryNodeStateChange(final ControllerServiceNode service, final PrimaryNodeState primaryNodeState) {
+    }
+
+    @Override
+    public void notifyPrimaryNodeStateChange(final ReportingTaskNode taskNode, final PrimaryNodeState primaryNodeState) {
     }
 }

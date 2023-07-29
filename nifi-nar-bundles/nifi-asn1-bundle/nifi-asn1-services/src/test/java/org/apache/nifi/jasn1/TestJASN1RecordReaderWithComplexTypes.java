@@ -16,6 +16,7 @@
  */
 package org.apache.nifi.jasn1;
 
+import com.beanit.asn1bean.ber.types.BerBitString;
 import com.beanit.asn1bean.ber.types.BerBoolean;
 import com.beanit.asn1bean.ber.types.BerInteger;
 import com.beanit.asn1bean.ber.types.BerOctetString;
@@ -34,13 +35,16 @@ import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.serialization.record.RecordField;
 import org.apache.nifi.serialization.record.RecordFieldType;
 import org.apache.nifi.serialization.record.RecordSchema;
+import org.apache.nifi.serialization.record.SchemaIdentifier;
 import org.apache.nifi.serialization.record.type.ArrayDataType;
 import org.apache.nifi.serialization.record.type.RecordDataType;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -79,19 +83,22 @@ public class TestJASN1RecordReaderWithComplexTypes implements JASN1ReadRecordTes
         basicTypes.setI(new BerInteger(789));
         basicTypes.setOctStr(new BerOctetString(new byte[]{1, 2, 3, 4, 5}));
         basicTypes.setUtf8Str(new BerUTF8String("Some UTF-8 String. こんにちは世界。"));
+        basicTypes.setBitStr(new BerBitString(new boolean[] { true, false, true, true}));
 
         Map<String, Object> expectedValues = new HashMap<String, Object>() {{
             put("b", true);
             put("i", BigInteger.valueOf(789));
             put("octStr", "0102030405");
             put("utf8Str", "Some UTF-8 String. こんにちは世界。");
+            put("bitStr", "1011");
         }};
 
         RecordSchema expectedSchema = new SimpleRecordSchema(Arrays.asList(
                 new RecordField("b", RecordFieldType.BOOLEAN.getDataType()),
                 new RecordField("i", RecordFieldType.BIGINT.getDataType()),
                 new RecordField("octStr", RecordFieldType.STRING.getDataType()),
-                new RecordField("utf8Str", RecordFieldType.STRING.getDataType())
+                new RecordField("utf8Str", RecordFieldType.STRING.getDataType()),
+                new RecordField("bitStr", RecordFieldType.STRING.getDataType())
         ));
 
         testReadRecord(dataFile, basicTypes, expectedValues, expectedSchema);
@@ -156,7 +163,8 @@ public class TestJASN1RecordReaderWithComplexTypes implements JASN1ReadRecordTes
                 new RecordField("b", RecordFieldType.BOOLEAN.getDataType()),
                 new RecordField("i", RecordFieldType.BIGINT.getDataType()),
                 new RecordField("octStr", RecordFieldType.STRING.getDataType()),
-                new RecordField("utf8Str", RecordFieldType.STRING.getDataType())
+                new RecordField("utf8Str", RecordFieldType.STRING.getDataType()),
+                new RecordField("bitStr", RecordFieldType.STRING.getDataType())
         ));
 
         RecordSchema expectedSchema = new SimpleRecordSchema(Arrays.asList(
@@ -270,12 +278,15 @@ public class TestJASN1RecordReaderWithComplexTypes implements JASN1ReadRecordTes
          * The resolution of the recursive schema results in a cyclic reference graph which in turn leads to
          *  StackOverflowError when trying to compare to a similar resolved recursive schema.
          */
-        SimpleRecordSchema expectedSchema = new SimpleRecordSchema(Arrays.asList(
-                new RecordField("name", RecordFieldType.STRING.getDataType()),
-                new RecordField("children", RecordFieldType.ARRAY.getArrayDataType(
-                        RecordFieldType.RECORD.getRecordDataType(() -> null)
-                ))
+        final SimpleRecordSchema expectedSchema = new SimpleRecordSchema(SchemaIdentifier.EMPTY);
+        final List<RecordField> fields = new ArrayList<>();
+        fields.add(new RecordField("name", RecordFieldType.STRING.getDataType()));
+        fields.add(new RecordField("children", RecordFieldType.ARRAY.getArrayDataType(
+                RecordFieldType.RECORD.getRecordDataType(expectedSchema))
         ));
+        expectedSchema.setFields(fields);
+        expectedSchema.setSchemaName("Recursive");
+        expectedSchema.setSchemaNamespace("org.apache.nifi.jasn1.example");
 
         Map<String, Object> expectedValues = new HashMap<String, Object>() {{
             put("name", "name");

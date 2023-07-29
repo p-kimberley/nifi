@@ -17,16 +17,15 @@ limitations under the License.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    
+
     <parent>
         <groupId>org.apache.nifi.minifi</groupId>
         <artifactId>minifi-c2</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
-    <groupId>org.apache.nifi.minifi</groupId>
     <artifactId>minifi-c2-docker</artifactId>
-    <version>1.19.0-SNAPSHOT</version>
+    <version>1.23.0</version>
     <packaging>pom</packaging>
 
     <properties>
@@ -35,42 +34,64 @@ limitations under the License.
 
     <profiles>
         <!-- Profile for building official Docker images. Not bound to build phases since that would require anyone build to have the Docker engine installed on their machine -->       
-        <profile>                                   
+        <profile>
             <id>docker</id>
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>com.spotify</groupId>
-                        <artifactId>docker-maven-plugin</artifactId>
-                        <version>0.4.13</version>
+                        <artifactId>maven-antrun-plugin</artifactId>
                         <executions>
                             <execution>
-                                <phase>package</phase>
+                                <id>copy-assembly-for-docker</id>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <phase>process-sources</phase>
+                                <configuration>
+                                    <target name="copy assembly for docker image build">
+                                        <copy todir="${project.basedir}/target" overwrite="true" flatten="true">
+                                            <fileset dir="${project.basedir}/../minifi-c2-assembly/target" includes="*.zip">
+                                                <include name="*.zip" />
+                                            </fileset>
+                                        </copy>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>io.fabric8</groupId>
+                        <artifactId>docker-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>build-docker-image</id>
+                                <phase>install</phase>
                                 <goals>
                                     <goal>build</goal>
                                 </goals>
+                                <configuration>
+                                    <images>
+                                        <image>
+                                            <name>apache/nifi-minifi-c2</name>
+                                            <build>
+                                                <tags>
+                                                    <tag>${minifi.c2.version}-maven</tag>
+                                                </tags>
+                                                <dockerFile>dockermaven/Dockerfile</dockerFile>
+                                                <contextDir>${project.basedir}</contextDir>
+                                                <args>
+                                                    <UID>1000</UID>
+                                                    <GID>1000</GID>
+                                                    <MINIFI_C2_VERSION>${minifi.c2.version}</MINIFI_C2_VERSION>
+                                                    <MINIFI_C2_BINARY_NAME>minifi-c2-${minifi.c2.version}-bin.zip</MINIFI_C2_BINARY_NAME>
+                                                    <MINIFI_C2_BINARY>target/minifi-c2-${minifi.c2.version}-bin.zip</MINIFI_C2_BINARY>
+                                                </args>
+                                            </build>
+                                        </image>
+                                    </images>
+                                </configuration>
                             </execution>
                         </executions>
-                        <configuration>
-                            <imageName>apacheminific2</imageName>
-                            <dockerDirectory>${project.basedir}/dockermaven</dockerDirectory>
-                            <imageTags>
-                               <imageTag>${minifi.c2.version}</imageTag>
-                            </imageTags>
-                            <buildArgs>
-                                <UID>1000</UID>
-                                <GID>1000</GID>
-                                <MINIFI_C2_VERSION>${minifi.c2.version}</MINIFI_C2_VERSION>
-                                <MINIFI_C2_BINARY>minifi-c2-${minifi.c2.version}-bin.tar.gz</MINIFI_C2_BINARY>
-                            </buildArgs>
-                            <resources>
-                               <resource>
-                                 <targetPath>/</targetPath>
-                                 <directory>${project.basedir}/../minifi-c2-assembly/target</directory>
-                                 <include>minifi-c2-${minifi.c2.version}-bin.tar.gz</include>
-                               </resource>
-                            </resources>
-                        </configuration>
                     </plugin>
                 </plugins>
             </build>

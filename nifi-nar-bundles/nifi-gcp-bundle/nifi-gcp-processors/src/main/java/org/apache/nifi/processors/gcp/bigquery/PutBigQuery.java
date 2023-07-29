@@ -17,6 +17,9 @@
 
 package org.apache.nifi.processors.gcp.bigquery;
 
+import static java.util.stream.Collectors.collectingAndThen;
+import static java.util.stream.Collectors.toList;
+
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
@@ -38,10 +41,12 @@ import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.cloud.bigquery.storage.v1.TableName;
 import com.google.cloud.bigquery.storage.v1.WriteStream;
+import com.google.cloud.bigquery.storage.v1.stub.BigQueryWriteStubSettings;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.grpc.Status;
 import java.time.LocalTime;
+import java.util.stream.Stream;
 import org.apache.nifi.annotation.behavior.EventDriven;
 import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.TriggerSerially;
@@ -111,13 +116,29 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
     private final AtomicReference<Exception> error = new AtomicReference<>();
     private final AtomicInteger appendSuccessCount = new AtomicInteger(0);
     private final Phaser inflightRequestCount = new Phaser(1);
-    private TableName tableName = null;
     private BigQueryWriteClient writeClient = null;
     private StreamWriter streamWriter = null;
     private String transferType;
+    private String endpoint;
     private int maxRetryCount;
     private int recordBatchCount;
-    private boolean skipInvalidRows;
+
+    public static final PropertyDescriptor PROJECT_ID = new PropertyDescriptor.Builder()
+        .fromPropertyDescriptor(AbstractBigQueryProcessor.PROJECT_ID)
+        .required(true)
+        .build();
+
+    public static final PropertyDescriptor BIGQUERY_API_ENDPOINT = new PropertyDescriptor.Builder()
+        .name("bigquery-api-endpoint")
+        .displayName("BigQuery API Endpoint")
+        .description("Can be used to override the default BigQuery endpoint. Default is "
+                + BigQueryWriteStubSettings.getDefaultEndpoint() + ". "
+                + "Format must be hostname:port.")
+        .addValidator(StandardValidators.HOSTNAME_PORT_LIST_VALIDATOR)
+        .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
+        .required(true)
+        .defaultValue(BigQueryWriteStubSettings.getDefaultEndpoint())
+        .build();
 
     static final PropertyDescriptor TRANSFER_TYPE = new PropertyDescriptor.Builder()
         .name(TRANSFER_TYPE_NAME)
@@ -155,28 +176,32 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
         .defaultValue("false")
         .build();
 
+    private static final List<PropertyDescriptor> DESCRIPTORS = Stream.of(
+        GCP_CREDENTIALS_PROVIDER_SERVICE,
+        PROJECT_ID,
+        BIGQUERY_API_ENDPOINT,
+        DATASET,
+        TABLE_NAME,
+        RECORD_READER,
+        TRANSFER_TYPE,
+        APPEND_RECORD_COUNT,
+        RETRY_COUNT,
+        SKIP_INVALID_ROWS
+    ).collect(collectingAndThen(toList(), Collections::unmodifiableList));
+
     @Override
     public List<PropertyDescriptor> getSupportedPropertyDescriptors() {
-        List<PropertyDescriptor> descriptors = new ArrayList<>(super.getSupportedPropertyDescriptors());
-        descriptors.add(TRANSFER_TYPE);
-        descriptors.add(RECORD_READER);
-        descriptors.add(APPEND_RECORD_COUNT);
-        descriptors.add(SKIP_INVALID_ROWS);
-        descriptors.remove(IGNORE_UNKNOWN);
-
-        return Collections.unmodifiableList(descriptors);
+        return DESCRIPTORS;
     }
 
     @Override
     @OnScheduled
     public void onScheduled(ProcessContext context) {
         super.onScheduled(context);
-
         transferType = context.getProperty(TRANSFER_TYPE).getValue();
         maxRetryCount = context.getProperty(RETRY_COUNT).asInteger();
-        skipInvalidRows = context.getProperty(SKIP_INVALID_ROWS).asBoolean();
         recordBatchCount = context.getProperty(APPEND_RECORD_COUNT).asInteger();
-        tableName = TableName.of(context.getProperty(PROJECT_ID).getValue(), context.getProperty(DATASET).getValue(), context.getProperty(TABLE_NAME).getValue());
+        endpoint = context.getProperty(BIGQUERY_API_ENDPOINT).evaluateAttributeExpressions().getValue();
         writeClient = createWriteClient(getGoogleCredentials(context));
     }
 
@@ -187,48 +212,53 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
 
     @Override
     public void onTrigger(ProcessContext context, ProcessSession session)  {
-        WriteStream writeStream;
-        Descriptors.Descriptor protoDescriptor;
-        try {
-            writeStream = createWriteStream();
-            protoDescriptor = BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(writeStream.getTableSchema());
-            streamWriter = createStreamWriter(writeStream.getName(), protoDescriptor, getGoogleCredentials(context));
-        } catch (Descriptors.DescriptorValidationException | IOException e) {
-            getLogger().error("Failed to create Big Query Stream Writer for writing", e);
-            context.yield();
-            return;
-        }
-
         FlowFile flowFile = session.get();
         if (flowFile == null) {
             return;
         }
 
+        final String projectId = context.getProperty(PROJECT_ID).getValue();
+        final String dataset = context.getProperty(DATASET).evaluateAttributeExpressions(flowFile).getValue();
+        final String dataTableName = context.getProperty(TABLE_NAME).evaluateAttributeExpressions(flowFile).getValue();
+        final TableName tableName = TableName.of(projectId, dataset, dataTableName);
+
+        WriteStream writeStream;
+        Descriptors.Descriptor protoDescriptor;
+        try {
+            writeStream = createWriteStream(tableName);
+            protoDescriptor = BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(writeStream.getTableSchema());
+            streamWriter = createStreamWriter(writeStream.getName(), protoDescriptor, getGoogleCredentials(context));
+        } catch (Descriptors.DescriptorValidationException | IOException e) {
+            getLogger().error("Failed to create Big Query Stream Writer for writing", e);
+            context.yield();
+            session.rollback();
+            return;
+        }
+
+        final boolean skipInvalidRows = context.getProperty(SKIP_INVALID_ROWS).evaluateAttributeExpressions(flowFile).asBoolean();
+        final RecordReaderFactory readerFactory = context.getProperty(RECORD_READER).asControllerService(RecordReaderFactory.class);
+
         int recordNumWritten;
         try {
-            try (InputStream in = session.read(flowFile)) {
-                RecordReaderFactory readerFactory = context.getProperty(RECORD_READER).asControllerService(RecordReaderFactory.class);
-                try (RecordReader reader = readerFactory.createRecordReader(flowFile, in, getLogger())) {
-                    recordNumWritten = writeRecordsToStream(reader, protoDescriptor);
-                }
+            try (InputStream in = session.read(flowFile);
+                    RecordReader reader = readerFactory.createRecordReader(flowFile, in, getLogger())) {
+                recordNumWritten = writeRecordsToStream(reader, protoDescriptor, skipInvalidRows);
             }
-
             flowFile = session.putAttribute(flowFile, BigQueryAttributes.JOB_NB_RECORDS_ATTR, Integer.toString(recordNumWritten));
         } catch (Exception e) {
-            getLogger().error("Writing Records failed", e);
             error.set(e);
         } finally {
             finishProcessing(session, flowFile, streamWriter, writeStream.getName(), tableName.toString());
         }
     }
 
-    private int writeRecordsToStream(RecordReader reader, Descriptors.Descriptor descriptor) throws Exception {
+    private int writeRecordsToStream(RecordReader reader, Descriptors.Descriptor descriptor, boolean skipInvalidRows) throws Exception {
         Record currentRecord;
         int offset = 0;
         int recordNum = 0;
         ProtoRows.Builder rowsBuilder = ProtoRows.newBuilder();
         while ((currentRecord = reader.nextRecord()) != null) {
-            DynamicMessage message = recordToProtoMessage(currentRecord, descriptor);
+            DynamicMessage message = recordToProtoMessage(currentRecord, descriptor, skipInvalidRows);
 
             if (message == null) {
                 continue;
@@ -250,7 +280,7 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
         return recordNum;
     }
 
-    private DynamicMessage recordToProtoMessage(Record record, Descriptors.Descriptor descriptor) {
+    private DynamicMessage recordToProtoMessage(Record record, Descriptors.Descriptor descriptor, boolean skipInvalidRows) {
         Map<String, Object> valueMap = convertMapRecord(record.toMap());
         DynamicMessage message = null;
         try {
@@ -289,6 +319,7 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
             flowFile = session.putAttribute(flowFile, BigQueryAttributes.JOB_NB_RECORDS_ATTR, isBatch() ? "0" : String.valueOf(appendSuccessCount.get() * recordBatchCount));
             session.penalize(flowFile);
             session.transfer(flowFile, REL_FAILURE);
+            error.set(null); // set error to null for next execution
         } else {
             if (isBatch()) {
                 writeClient.finalizeWriteStream(streamName);
@@ -356,7 +387,7 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
         }
     }
 
-    private WriteStream createWriteStream() {
+    private WriteStream createWriteStream(TableName tableName) {
         WriteStream.Type type = isBatch() ? WriteStream.Type.PENDING : WriteStream.Type.COMMITTED;
         CreateWriteStreamRequest createWriteStreamRequest = CreateWriteStreamRequest.newBuilder()
             .setParent(tableName.toString())
@@ -369,7 +400,11 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
     protected BigQueryWriteClient createWriteClient(GoogleCredentials credentials) {
         BigQueryWriteClient client;
         try {
-            client = BigQueryWriteClient.create(BigQueryWriteSettings.newBuilder().setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build());
+            BigQueryWriteSettings.Builder builder = BigQueryWriteSettings.newBuilder();
+            builder.setCredentialsProvider(FixedCredentialsProvider.create(credentials));
+            builder.setEndpoint(endpoint);
+
+            client = BigQueryWriteClient.create(builder.build());
         } catch (Exception e) {
             throw new ProcessException("Failed to create Big Query Write Client for writing", e);
         }
@@ -379,9 +414,13 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
 
     protected StreamWriter createStreamWriter(String streamName, Descriptors.Descriptor descriptor, GoogleCredentials credentials) throws IOException {
         ProtoSchema protoSchema = ProtoSchemaConverter.convert(descriptor);
-        return StreamWriter.newBuilder(streamName)
-            .setWriterSchema(protoSchema)
-            .setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build();
+
+        StreamWriter.Builder builder = StreamWriter.newBuilder(streamName);
+        builder.setWriterSchema(protoSchema);
+        builder.setCredentialsProvider(FixedCredentialsProvider.create(credentials));
+        builder.setEndpoint(endpoint);
+
+        return builder.build();
     }
 
     private boolean isBatch() {
@@ -420,6 +459,9 @@ public class PutBigQuery extends AbstractBigQueryProcessor {
         Map<String, Object> result = new HashMap<>();
         for (String key : map.keySet()) {
             Object obj = map.get(key);
+            // BigQuery is not case sensitive on the column names but the protobuf message
+            // expect all column names to be lower case
+            key = key.toLowerCase();
             if (obj instanceof MapRecord) {
                 result.put(key, convertMapRecord(((MapRecord) obj).toMap()));
             } else if (obj instanceof Object[]

@@ -70,8 +70,6 @@ import org.apache.nifi.web.api.entity.AboutEntity;
 import org.apache.nifi.web.api.entity.ActionEntity;
 import org.apache.nifi.web.api.entity.ActivateControllerServicesEntity;
 import org.apache.nifi.web.api.entity.BannerEntity;
-import org.apache.nifi.web.api.entity.FlowRegistryBucketEntity;
-import org.apache.nifi.web.api.entity.FlowRegistryBucketsEntity;
 import org.apache.nifi.web.api.entity.BulletinBoardEntity;
 import org.apache.nifi.web.api.entity.ClusteSummaryEntity;
 import org.apache.nifi.web.api.entity.ClusterSearchResultsEntity;
@@ -85,6 +83,8 @@ import org.apache.nifi.web.api.entity.ControllerServicesEntity;
 import org.apache.nifi.web.api.entity.ControllerStatusEntity;
 import org.apache.nifi.web.api.entity.CurrentUserEntity;
 import org.apache.nifi.web.api.entity.FlowConfigurationEntity;
+import org.apache.nifi.web.api.entity.FlowRegistryBucketEntity;
+import org.apache.nifi.web.api.entity.FlowRegistryBucketsEntity;
 import org.apache.nifi.web.api.entity.FlowRegistryClientEntity;
 import org.apache.nifi.web.api.entity.FlowRegistryClientsEntity;
 import org.apache.nifi.web.api.entity.HistoryEntity;
@@ -497,7 +497,9 @@ public class FlowResource extends ApplicationResource {
                     @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
             }
     )
-    public Response getControllerServicesFromController(@QueryParam("uiOnly") @DefaultValue("false") final boolean uiOnly) {
+    public Response getControllerServicesFromController(@QueryParam("uiOnly") @DefaultValue("false") final boolean uiOnly,
+                                                        @QueryParam("includeReferencingComponents") @DefaultValue("true")
+                                                        @ApiParam("Whether or not to include services' referencing components in the response") boolean includeReferences) {
 
         authorizeFlow();
 
@@ -506,7 +508,7 @@ public class FlowResource extends ApplicationResource {
         }
 
         // get all the controller services
-        final Set<ControllerServiceEntity> controllerServices = serviceFacade.getControllerServices(null, false, false);
+        final Set<ControllerServiceEntity> controllerServices = serviceFacade.getControllerServices(null, false, false, includeReferences);
         if (uiOnly) {
             controllerServices.forEach(this::stripNonUiRelevantFields);
         }
@@ -550,8 +552,9 @@ public class FlowResource extends ApplicationResource {
     )
     public Response getControllerServicesFromGroup(
             @ApiParam(value = "The process group id.", required = true) @PathParam("id") String groupId,
-            @ApiParam("Whether or not to include parent/ancestory process groups") @QueryParam("includeAncestorGroups") @DefaultValue("true") boolean includeAncestorGroups,
+            @ApiParam("Whether or not to include parent/ancestor process groups") @QueryParam("includeAncestorGroups") @DefaultValue("true") boolean includeAncestorGroups,
             @ApiParam("Whether or not to include descendant process groups") @QueryParam("includeDescendantGroups") @DefaultValue("false") boolean includeDescendantGroups,
+            @ApiParam("Whether or not to include services' referencing components in the response") @QueryParam("includeReferencingComponents") @DefaultValue("true") boolean includeReferences,
             @QueryParam("uiOnly") @DefaultValue("false") final boolean uiOnly) {
 
         authorizeFlow();
@@ -561,7 +564,7 @@ public class FlowResource extends ApplicationResource {
         }
 
         // get all the controller services
-        final Set<ControllerServiceEntity> controllerServices = serviceFacade.getControllerServices(groupId, includeAncestorGroups, includeDescendantGroups);
+        final Set<ControllerServiceEntity> controllerServices = serviceFacade.getControllerServices(groupId, includeAncestorGroups, includeDescendantGroups, includeReferences);
         if (uiOnly) {
             controllerServices.forEach(this::stripNonUiRelevantFields);
         }
@@ -1646,8 +1649,10 @@ public class FlowResource extends ApplicationResource {
     private FlowRegistryClientEntity populateRemainingRegistryClientEntityContent(final FlowRegistryClientEntity flowRegistryClientEntity) {
         flowRegistryClientEntity.setUri(generateResourceUri("controller", "registry-clients", flowRegistryClientEntity.getId()));
 
-        if (flowRegistryClientEntity.getComponent().getType().equals(NIFI_REGISTRY_TYPE)) {
-            flowRegistryClientEntity.getComponent().setUri(flowRegistryClientEntity.getComponent().getProperties().get("url"));
+        if (flowRegistryClientEntity.getComponent() != null) {
+            if (flowRegistryClientEntity.getComponent().getType().equals(NIFI_REGISTRY_TYPE)) {
+                flowRegistryClientEntity.getComponent().setUri(flowRegistryClientEntity.getComponent().getProperties().get("url"));
+            }
         }
 
         return flowRegistryClientEntity;
@@ -1754,6 +1759,45 @@ public class FlowResource extends ApplicationResource {
 
     private String getFlowName(final VersionedFlowEntity flowEntity) {
         return flowEntity.getVersionedFlow() == null ? "" : flowEntity.getVersionedFlow().getFlowName();
+    }
+
+    @GET
+    @Consumes(MediaType.WILDCARD)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("registries/{registry-id}/buckets/{bucket-id}/flows/{flow-id}/details")
+    @ApiOperation(value = "Gets the details of a flow from the specified registry and bucket for the specified flow for the current user",
+            response = VersionedFlowEntity.class,
+            authorizations = {
+                    @Authorization(value = "Read - /flow")
+            })
+    @ApiResponses(value = {
+            @ApiResponse(code = 400, message = "NiFi was unable to complete the request because it was invalid. The request should not be retried without modification."),
+            @ApiResponse(code = 401, message = "Client could not be authenticated."),
+            @ApiResponse(code = 403, message = "Client is not authorized to make this request."),
+            @ApiResponse(code = 404, message = "The specified resource could not be found."),
+            @ApiResponse(code = 409, message = "The request was valid but NiFi was not in the appropriate state to process it. Retrying the same request later may be successful.")
+    })
+    public Response getDetails(
+            @ApiParam(
+                    value = "The registry client id.",
+                    required = true
+            )
+            @PathParam("registry-id") String registryId,
+            @ApiParam(
+                    value = "The bucket id.",
+                    required = true
+            )
+            @PathParam("bucket-id") String bucketId,
+            @ApiParam(
+                    value = "The flow id.",
+                    required = true
+            )
+            @PathParam("flow-id") String flowId) {
+
+        authorizeFlow();
+
+        final VersionedFlowEntity flowDetails = serviceFacade.getFlowForUser(registryId, bucketId, flowId);
+        return generateOkResponse(flowDetails).build();
     }
 
     @GET

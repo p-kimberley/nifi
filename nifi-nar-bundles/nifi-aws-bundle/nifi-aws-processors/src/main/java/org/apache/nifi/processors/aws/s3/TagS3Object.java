@@ -106,21 +106,50 @@ public class TagS3Object extends AbstractS3Processor {
             .required(false)
             .build();
 
-    public static final List<PropertyDescriptor> properties = Collections.unmodifiableList(
-            Arrays.asList(KEY, BUCKET, VERSION_ID, TAG_KEY, TAG_VALUE, APPEND_TAG, ACCESS_KEY, SECRET_KEY,
-                    CREDENTIALS_FILE, AWS_CREDENTIALS_PROVIDER_SERVICE, REGION, TIMEOUT, SSL_CONTEXT_SERVICE,
-                    ENDPOINT_OVERRIDE, SIGNER_OVERRIDE, PROXY_CONFIGURATION_SERVICE, PROXY_HOST, PROXY_HOST_PORT,
-                    PROXY_USERNAME, PROXY_PASSWORD));
+    public static final List<PropertyDescriptor> properties = Collections.unmodifiableList(Arrays.asList(
+            KEY,
+            BUCKET,
+            VERSION_ID,
+            TAG_KEY,
+            TAG_VALUE,
+            APPEND_TAG,
+            ACCESS_KEY,
+            SECRET_KEY,
+            CREDENTIALS_FILE,
+            AWS_CREDENTIALS_PROVIDER_SERVICE,
+            S3_REGION,
+            TIMEOUT,
+            SSL_CONTEXT_SERVICE,
+            ENDPOINT_OVERRIDE,
+            SIGNER_OVERRIDE,
+            S3_CUSTOM_SIGNER_CLASS_NAME,
+            S3_CUSTOM_SIGNER_MODULE_LOCATION,
+            PROXY_CONFIGURATION_SERVICE,
+            PROXY_HOST,
+            PROXY_HOST_PORT,
+            PROXY_USERNAME,
+            PROXY_PASSWORD));
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         return properties;
     }
 
+
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) {
         FlowFile flowFile = session.get();
         if (flowFile == null) {
+            return;
+        }
+
+        final AmazonS3Client s3;
+        try {
+            s3 = getS3Client(context, flowFile.getAttributes());
+        } catch (Exception e) {
+            getLogger().error("Failed to initialize S3 client", e);
+            flowFile = session.penalize(flowFile);
+            session.transfer(flowFile, REL_FAILURE);
             return;
         }
 
@@ -153,7 +182,6 @@ public class TagS3Object extends AbstractS3Processor {
 
         final String version = context.getProperty(VERSION_ID).evaluateAttributeExpressions(flowFile).getValue();
 
-        final AmazonS3Client s3 = getClient();
 
         SetObjectTaggingRequest r;
         List<Tag> tags = new ArrayList<>();

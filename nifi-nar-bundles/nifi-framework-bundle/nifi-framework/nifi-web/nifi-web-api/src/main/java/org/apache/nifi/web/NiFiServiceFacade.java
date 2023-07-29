@@ -32,6 +32,7 @@ import org.apache.nifi.parameter.ParameterContext;
 import org.apache.nifi.flow.ExternalControllerServiceReference;
 import org.apache.nifi.flow.ParameterProviderReference;
 import org.apache.nifi.parameter.ParameterGroupConfiguration;
+import org.apache.nifi.registry.flow.FlowSnapshotContainer;
 import org.apache.nifi.registry.flow.RegisteredFlow;
 import org.apache.nifi.registry.flow.RegisteredFlowSnapshot;
 import org.apache.nifi.flow.VersionedParameterContext;
@@ -128,6 +129,7 @@ import org.apache.nifi.web.api.entity.SnippetEntity;
 import org.apache.nifi.web.api.entity.StartVersionControlRequestEntity;
 import org.apache.nifi.web.api.entity.StatusHistoryEntity;
 import org.apache.nifi.web.api.entity.TemplateEntity;
+import org.apache.nifi.web.api.entity.TenantsEntity;
 import org.apache.nifi.web.api.entity.UserEntity;
 import org.apache.nifi.web.api.entity.UserGroupEntity;
 import org.apache.nifi.web.api.entity.VariableRegistryEntity;
@@ -1635,7 +1637,7 @@ public interface NiFiServiceFacade {
      *
      * @throws ResourceNotFoundException if the Versioned Flow Snapshot could not be found
      */
-    RegisteredFlowSnapshot getVersionedFlowSnapshot(VersionControlInformationDTO versionControlInfo, boolean fetchRemoteFlows);
+    FlowSnapshotContainer getVersionedFlowSnapshot(VersionControlInformationDTO versionControlInfo, boolean fetchRemoteFlows);
 
     /**
      * Get the latest Versioned Flow Snapshot from the registry for the Process Group with the given ID
@@ -1645,7 +1647,7 @@ public interface NiFiServiceFacade {
      *
      * @throws ResourceNotFoundException if the Versioned Flow Snapshot could not be found
      */
-    RegisteredFlowSnapshot getVersionedFlowSnapshotByGroupId(String processGroupId);
+    FlowSnapshotContainer getVersionedFlowSnapshotByGroupId(String processGroupId);
 
     /**
      * Get the current state of the Process Group with the given ID, converted to a Versioned Flow Snapshot
@@ -1961,6 +1963,14 @@ public interface NiFiServiceFacade {
     Set<UserEntity> getUsers();
 
     /**
+     * Search for User and Group Tenants based on provided query string
+     *
+     * @param query Search query where null or empty returns unfiltered results
+     * @return Tenants Entity with zero or more matched Users and User Groups
+     */
+    TenantsEntity searchTenants(String query);
+
+    /**
      * Updates the specified user.
      * @param revision Revision to compare with current base revision
      * @param userDTO The user DTO
@@ -2085,17 +2095,23 @@ public interface NiFiServiceFacade {
      * @param groupId the id of the process group of interest
      * @param includeAncestorGroups if true, parent and ancestor groups' services will be returned as well
      * @param includeDescendantGroups if true, child and descendant groups' services will be returned as well
+     * @param includeReferencingComponents whether or not the response should include the referencing component services.
+     *       These can be expensive to include so should not be included when the are not necessary.
+     *
      * @return services
      */
-    Set<ControllerServiceEntity> getControllerServices(String groupId, boolean includeAncestorGroups, boolean includeDescendantGroups);
+    Set<ControllerServiceEntity> getControllerServices(String groupId, boolean includeAncestorGroups, boolean includeDescendantGroups, boolean includeReferencingComponents);
 
     /**
      * Gets the specified controller service.
      *
      * @param controllerServiceId id
+     * @param includeReferencingComponents whether or not the response should include the referencing component services.
+     *       These can be expensive to include so should not be included when the are not necessary.
+     *
      * @return service
      */
-    ControllerServiceEntity getControllerService(String controllerServiceId);
+    ControllerServiceEntity getControllerService(String controllerServiceId, boolean includeReferencingComponents);
 
     /**
      * Get the descriptor for the specified property of the specified controller service.
@@ -2473,6 +2489,17 @@ public interface NiFiServiceFacade {
      */
     Set<VersionedFlowEntity> getFlowsForUser(String registryClientId, String bucketId);
 
+
+    /**
+     * Returns the details of a versioned flow from a given bucket of a given registry.
+     *
+     * @param registryClientId registry client id
+     * @param bucketId bucket id
+     * @param flowId flow id
+     * @return the flow details
+     */
+    VersionedFlowEntity getFlowForUser(String registryClientId, String bucketId, String flowId);
+
     /**
      * Gets the versions of the specified registry, bucket, and flow for the current user.
      *
@@ -2680,11 +2707,11 @@ public interface NiFiServiceFacade {
      * For any Controller Service that is found in the given Versioned Process Group, if that Controller Service is not itself included in the Versioned Process Groups,
      * attempts to find an existing Controller Service that matches the definition. If any is found, the component within the Versioned Process Group is updated to point
      * to the existing service.
-     *  @param versionedFlowSnapshot the flow snapshot
+     *  @param flowSnapshotContainer the flow snapshot container
      * @param parentGroupId the ID of the Process Group from which the Controller Services are inherited
      * @param user the NiFi user on whose behalf the request is happening; this user is used for validation so that only the Controller Services that the user has READ permissions to are included
      */
-    void resolveInheritedControllerServices(RegisteredFlowSnapshot versionedFlowSnapshot, String parentGroupId, NiFiUser user);
+    void resolveInheritedControllerServices(FlowSnapshotContainer flowSnapshotContainer, String parentGroupId, NiFiUser user);
 
     /**
      * For any Parameter Provider that is found in the given Versioned Process Group, attempts to find an existing Parameter Provider that matches the definition. If any is found,

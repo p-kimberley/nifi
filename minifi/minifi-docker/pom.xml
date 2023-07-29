@@ -17,63 +17,101 @@ limitations under the License.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    
+
     <parent>
         <groupId>org.apache.nifi.minifi</groupId>
         <artifactId>minifi</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
-    <groupId>org.apache.nifi.minifi</groupId>
     <artifactId>minifi-docker</artifactId>
     <packaging>pom</packaging>
 
     <properties>
         <minifi.version>${project.version}</minifi.version>
-        <docker.image.name>openjdk</docker.image.name>
-        <docker.image.tag>8-jre-alpine</docker.image.tag>
+        <docker.image.name>eclipse-temurin</docker.image.name>
+        <docker.image.tag>11-jre</docker.image.tag>
     </properties>
 
     <profiles>
         <!-- Profile for building official Docker images. Not bound to build phases since that would require anyone build to have the Docker engine installed on their machine -->       
-        <profile>                                   
+        <profile>
             <id>docker</id>
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>com.spotify</groupId>
-                        <artifactId>docker-maven-plugin</artifactId>
-                        <version>0.4.13</version>
+                        <artifactId>maven-antrun-plugin</artifactId>
                         <executions>
                             <execution>
-                                <phase>package</phase>
+                                <id>copy-scripts-for-docker</id>
+                                <phase>process-sources</phase>
+                                <configuration>
+                                    <target name="copy docker scripts for image build">
+                                        <copy todir="${project.basedir}/target/sh" overwrite="true" flatten="true">
+                                            <fileset dir="${project.basedir}/dockerhub/sh" includes="*.sh">
+                                                <include name="*.sh" />
+                                            </fileset>
+                                        </copy>
+                                    </target>
+                                </configuration>
                                 <goals>
-                                    <goal>build</goal>
+                                    <goal>run</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>copy-assembly-for-docker</id>
+                                <phase>process-sources</phase>
+                                <configuration>
+                                    <target name="copy assembly for image build">
+                                        <copy todir="${project.basedir}/target" overwrite="true" flatten="true">
+                                            <fileset dir="${project.basedir}/../minifi-assembly/target" includes="*.zip">
+                                                <include name="*.zip" />
+                                            </fileset>
+                                        </copy>
+                                    </target>
+                                </configuration>
+                                <goals>
+                                    <goal>run</goal>
                                 </goals>
                             </execution>
                         </executions>
-                        <configuration>
-                            <imageName>apacheminifi</imageName>
-                            <dockerDirectory>${project.basedir}/dockermaven</dockerDirectory>
-                            <imageTags>
-                               <imageTag>${minifi.version}</imageTag>
-                            </imageTags>
-                            <buildArgs>
-                                <IMAGE_NAME>${docker.image.name}</IMAGE_NAME>
-                                <IMAGE_TAG>${docker.image.tag}</IMAGE_TAG>
-                                <UID>1000</UID>
-                                <GID>1000</GID>
-                                <MINIFI_VERSION>${minifi.version}</MINIFI_VERSION>
-                                <MINIFI_BINARY>minifi-${minifi.version}-bin.tar.gz</MINIFI_BINARY>
-                            </buildArgs>
-                            <resources>
-                               <resource>
-                                 <targetPath>/</targetPath>
-                                 <directory>${project.basedir}/../minifi-assembly/target</directory>
-                                 <include>minifi-${minifi.version}-bin.tar.gz</include>
-                               </resource>
-                            </resources>
-                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>io.fabric8</groupId>
+                        <artifactId>docker-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>build-docker-image</id>
+                                <phase>install</phase>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                                <configuration>
+                                    <images>
+                                        <image>
+                                            <name>apache/nifi-minifi</name>
+                                            <build>
+                                                <tags>
+                                                    <tag>${minifi.version}-maven</tag>
+                                                </tags>
+                                                <dockerFile>dockermaven/Dockerfile</dockerFile>
+                                                <contextDir>${project.basedir}</contextDir>
+                                                <args>
+                                                    <IMAGE_NAME>${docker.image.name}</IMAGE_NAME>
+                                                    <IMAGE_TAG>${docker.image.tag}</IMAGE_TAG>
+                                                    <UID>1000</UID>
+                                                    <GID>1000</GID>
+                                                    <MINIFI_VERSION>${minifi.version}</MINIFI_VERSION>
+                                                    <MINIFI_BINARY_NAME>minifi-${minifi.version}-bin.zip</MINIFI_BINARY_NAME>
+                                                    <MINIFI_BINARY>target/minifi-${minifi.version}-bin.zip</MINIFI_BINARY>
+                                                    <MINIFI_SCRIPTS>target/sh</MINIFI_SCRIPTS>
+                                                </args>
+                                            </build>
+                                        </image>
+                                    </images>
+                                </configuration>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>

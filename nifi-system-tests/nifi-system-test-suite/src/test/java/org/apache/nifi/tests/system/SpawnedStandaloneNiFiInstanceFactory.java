@@ -35,6 +35,7 @@ import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -52,6 +53,29 @@ public class SpawnedStandaloneNiFiInstanceFactory implements NiFiInstanceFactory
         return new RunNiFiInstance(instanceConfig);
     }
 
+    @Override
+    public boolean isClusteredInstance() {
+        return false;
+    }
+
+    @Override
+    public boolean equals(final Object other) {
+        if (this == other) {
+            return true;
+        }
+
+        if (other == null || getClass() != other.getClass()) {
+            return false;
+        }
+
+        final SpawnedStandaloneNiFiInstanceFactory that = (SpawnedStandaloneNiFiInstanceFactory) other;
+        return Objects.equals(instanceConfig, that.instanceConfig);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(instanceConfig);
+    }
 
     private static class RunNiFiInstance implements NiFiInstance {
         private final File instanceDirectory;
@@ -122,6 +146,12 @@ public class SpawnedStandaloneNiFiInstanceFactory implements NiFiInstanceFactory
             final File destinationLib = new File(instanceDirectory, "lib");
             copyContents(new File("target/nifi-lib-assembly/lib"), destinationLib);
 
+            final File destinationNarProviderNars = new File(instanceDirectory, "nifi-nar-provider-nars");
+            copyContents(new File("target/nifi-nar-provider-nars"), destinationNarProviderNars);
+
+            final File destinationExtensionsDir = new File(instanceDirectory, "extensions");
+            destinationExtensionsDir.mkdir();
+
             final File destinationCertsDir = new File(instanceDirectory, "certs");
             if (!destinationCertsDir.exists()) {
                 assertTrue(destinationCertsDir.mkdirs());
@@ -175,27 +205,32 @@ public class SpawnedStandaloneNiFiInstanceFactory implements NiFiInstanceFactory
             }
         }
 
-        @Override
-        public void setFlowXmlGz(final File flowXmlGz) throws IOException {
-            final File destinationConf = new File(instanceDirectory, "conf");
-            final File destinationFlowXmlGz = new File(destinationConf, "flow.xml.gz");
-            destinationFlowXmlGz.delete();
-            Files.copy(flowXmlGz.toPath(), destinationFlowXmlGz.toPath());
+        public boolean isAccessible() {
+            if (runNiFi == null) {
+                return false;
+            }
+
+            try (final NiFiClient client = createClient()) {
+                client.getFlowClient().getRootGroupId();
+                return true;
+            } catch (final Exception e) {
+                return false;
+            }
         }
 
         private void waitForStartup() throws IOException {
-            final NiFiClient client = createClient();
-
-            while (true) {
-                try {
-                    client.getFlowClient().getRootGroupId();
-                    logger.info("NiFi Startup Completed [{}]", instanceDirectory.getName());
-                    return;
-                } catch (final Exception e) {
+            try (final NiFiClient client = createClient()) {
+                while (true) {
                     try {
-                        Thread.sleep(1000L);
-                    } catch (InterruptedException ex) {
-                        logger.debug("NiFi Startup sleep interrupted", ex);
+                        client.getFlowClient().getRootGroupId();
+                        logger.info("NiFi Startup Completed [{}]", instanceDirectory.getName());
+                        return;
+                    } catch (final Exception e) {
+                        try {
+                            Thread.sleep(1000L);
+                        } catch (InterruptedException ex) {
+                            logger.debug("NiFi Startup sleep interrupted", ex);
+                        }
                     }
                 }
             }

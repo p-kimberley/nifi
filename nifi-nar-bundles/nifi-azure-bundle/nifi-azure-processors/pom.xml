@@ -15,7 +15,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-azure-bundle</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
     <artifactId>nifi-azure-processors</artifactId>
     <packaging>jar</packaging>
@@ -30,12 +30,21 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-utils</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-service-utils</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.nifi</groupId>
+            <artifactId>nifi-resource-transfer</artifactId>
+            <version>1.23.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.nifi</groupId>
+            <artifactId>nifi-file-resource-service-api</artifactId>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
@@ -56,7 +65,7 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-azure-services-api</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -87,6 +96,18 @@
             <groupId>com.azure</groupId>
             <artifactId>azure-storage-blob</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-storage-blob-cryptography</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-security-keyvault-keys</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-storage-queue</artifactId>
+        </dependency>
         <!-- Legacy Microsoft Azure Libraries -->
         <dependency>
             <groupId>com.microsoft.azure</groupId>
@@ -108,43 +129,42 @@
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
-            <version>2.9.2</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-mock</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-mock-record-utils</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-avro-record-utils</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-json-utils</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-schema-registry-service-api</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-record-serialization-services</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -156,7 +176,7 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-listed-entity</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
@@ -166,7 +186,13 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-proxy-configuration</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.nifi</groupId>
+            <artifactId>nifi-file-resource-service</artifactId>
+            <version>1.23.0</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -17,42 +17,75 @@
  */
 package org.apache.nifi.processors.iceberg.catalog;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.iceberg.CatalogProperties;
-import org.apache.iceberg.catalog.Catalog;
-import org.apache.iceberg.hive.HiveCatalog;
 import org.apache.nifi.controller.AbstractControllerService;
+import org.apache.nifi.services.iceberg.IcebergCatalogProperty;
 import org.apache.nifi.services.iceberg.IcebergCatalogService;
+import org.apache.nifi.services.iceberg.IcebergCatalogType;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+
+import static org.apache.nifi.services.iceberg.IcebergCatalogProperty.METASTORE_URI;
+import static org.apache.nifi.services.iceberg.IcebergCatalogProperty.WAREHOUSE_LOCATION;
 
 public class TestHiveCatalogService extends AbstractControllerService implements IcebergCatalogService {
 
-    private Catalog catalog;
+    private final List<String> configFilePaths;
+    private final Map<IcebergCatalogProperty, String> catalogProperties;
 
-    public TestHiveCatalogService(String metastoreUri, String warehouseLocation) {
-        initCatalog(metastoreUri, warehouseLocation);
-    }
-
-    public void initCatalog(String metastoreUri, String warehouseLocation) {
-        catalog = new HiveCatalog();
-
-        Map<String, String> properties = new HashMap<>();
-        properties.put(CatalogProperties.URI, metastoreUri);
-        properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
-
-        catalog.initialize("hive-catalog", properties);
+    public TestHiveCatalogService(Map<IcebergCatalogProperty, String> catalogProperties, List<String> configFilePaths) {
+        this.catalogProperties = catalogProperties;
+        this.configFilePaths = configFilePaths;
     }
 
     @Override
-    public Catalog getCatalog() {
-        return catalog;
+    public IcebergCatalogType getCatalogType() {
+        return IcebergCatalogType.HIVE;
     }
 
     @Override
-    public Configuration getConfiguration() {
-        return null;
+    public Map<IcebergCatalogProperty, String> getCatalogProperties() {
+        return catalogProperties;
     }
 
+    @Override
+    public List<String> getConfigFilePaths() {
+        return configFilePaths;
+    }
+
+    public static class Builder {
+        private String metastoreUri;
+        private String warehouseLocation;
+        private List<String> configFilePaths;
+
+        public Builder withMetastoreUri(String metastoreUri) {
+            this.metastoreUri = metastoreUri;
+            return this;
+        }
+
+        public Builder withWarehouseLocation(String warehouseLocation) {
+            this.warehouseLocation = warehouseLocation;
+            return this;
+        }
+
+        public Builder withConfigFilePaths(List<String> configFilePaths) {
+            this.configFilePaths = configFilePaths;
+            return this;
+        }
+
+        public TestHiveCatalogService build() {
+            Map<IcebergCatalogProperty, String> properties = new HashMap<>();
+
+            if (metastoreUri != null) {
+                properties.put(METASTORE_URI, metastoreUri);
+            }
+
+            if (warehouseLocation != null) {
+                properties.put(WAREHOUSE_LOCATION, warehouseLocation);
+            }
+
+            return new TestHiveCatalogService(properties, configFilePaths);
+        }
+    }
 }

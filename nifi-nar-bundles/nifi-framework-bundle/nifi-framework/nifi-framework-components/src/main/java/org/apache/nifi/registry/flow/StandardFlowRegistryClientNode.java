@@ -46,11 +46,16 @@ import org.apache.nifi.parameter.ParameterLookup;
 import org.apache.nifi.registry.ComponentVariableRegistry;
 import org.apache.nifi.util.CharacterFilterUtils;
 import org.apache.nifi.util.file.classloader.ClassLoaderUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -58,6 +63,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 public final class StandardFlowRegistryClientNode extends AbstractComponentNode implements FlowRegistryClientNode {
+    private static final Logger logger = LoggerFactory.getLogger(StandardFlowRegistryClientNode.class);
 
     private final FlowManager flowManager;
     private final Authorizable parent;
@@ -211,19 +217,25 @@ public final class StandardFlowRegistryClientNode extends AbstractComponentNode 
     }
 
     @Override
-    public RegisteredFlowSnapshot getFlowContents(
+    public FlowSnapshotContainer getFlowContents(
             final FlowRegistryClientUserContext context, final String bucketId, final String flowId, final int version, final boolean fetchRemoteFlows
     ) throws FlowRegistryException, IOException {
-        final RegisteredFlowSnapshot flowSnapshot = execute(() ->client.get().getComponent().getFlowContents(getConfigurationContext(context), bucketId, flowId, version));
+        final RegisteredFlowSnapshot flowSnapshot = execute(() -> client.get().getComponent().getFlowContents(getConfigurationContext(context), bucketId, flowId, version));
 
+        final FlowSnapshotContainer snapshotContainer = new FlowSnapshotContainer(flowSnapshot);
         if (fetchRemoteFlows) {
             final VersionedProcessGroup contents = flowSnapshot.getFlowContents();
             for (final VersionedProcessGroup child : contents.getProcessGroups()) {
-                populateVersionedContentsRecursively(context, child);
+                final Map<String, VersionedParameterContext> childParameterContexts = populateVersionedContentsRecursively(context, child, snapshotContainer);
+
+                for (final Map.Entry<String, VersionedParameterContext> childParameterContext : childParameterContexts.entrySet()) {
+                    flowSnapshot.getParameterContexts().putIfAbsent(childParameterContext.getKey(), childParameterContext.getValue());
+                }
+                populateVersionedContentsRecursively(context, child, snapshotContainer);
             }
         }
 
-        return flowSnapshot;
+        return snapshotContainer;
     }
 
     @Override
@@ -291,19 +303,21 @@ public final class StandardFlowRegistryClientNode extends AbstractComponentNode 
         return context.getNiFiUserIdentity().orElse(null);
     }
 
-    private void populateVersionedContentsRecursively(final FlowRegistryClientUserContext context, final VersionedProcessGroup group) throws IOException, FlowRegistryException {
+    private Map<String, VersionedParameterContext> populateVersionedContentsRecursively(
+            final FlowRegistryClientUserContext context,
+            final VersionedProcessGroup group,
+            final FlowSnapshotContainer snapshotContainer
+    ) throws FlowRegistryException {
+        Map<String, VersionedParameterContext> accumulatedParameterContexts = new HashMap<>();
+
         if (group == null) {
-            return;
+            return accumulatedParameterContexts;
         }
 
         final VersionedFlowCoordinates coordinates = group.getVersionedFlowCoordinates();
 
         if (coordinates != null) {
-            final String storageLocation = coordinates.getStorageLocation() == null ? coordinates.getRegistryUrl() : coordinates.getStorageLocation();
-            final String bucketId = coordinates.getBucketId();
-            final String flowId = coordinates.getFlowId();
-            final int version = coordinates.getVersion();
-            final RegisteredFlowSnapshot snapshot =  getRegistryForInternalFlow(storageLocation).getFlowContents(context, bucketId, flowId, version, true);
+            final RegisteredFlowSnapshot snapshot = fetchFlowContents(context, coordinates, true);
             final VersionedProcessGroup contents = snapshot.getFlowContents();
 
             group.setVersionedFlowCoordinates(coordinates);
@@ -324,22 +338,60 @@ public final class StandardFlowRegistryClientNode extends AbstractComponentNode 
             group.setDefaultFlowFileExpiration(contents.getDefaultFlowFileExpiration());
             group.setDefaultBackPressureObjectThreshold(contents.getDefaultBackPressureObjectThreshold());
             group.setDefaultBackPressureDataSizeThreshold(contents.getDefaultBackPressureDataSizeThreshold());
+            group.setLogFileSuffix(contents.getLogFileSuffix());
             coordinates.setLatest(snapshot.isLatest());
+
+            for (final Map.Entry<String, VersionedParameterContext> parameterContext : snapshot.getParameterContexts().entrySet()) {
+                accumulatedParameterContexts.put(parameterContext.getKey(), parameterContext.getValue());
+            }
+
+            snapshotContainer.addChildSnapshot(snapshot, group);
         }
 
         for (final VersionedProcessGroup child : group.getProcessGroups()) {
-            populateVersionedContentsRecursively(context, child);
-        }
-    }
+            final Map<String, VersionedParameterContext> childParameterContexts = populateVersionedContentsRecursively(context, child, snapshotContainer);
 
-    private FlowRegistryClientNode getRegistryForInternalFlow(final String storageLocation) throws FlowRegistryException, IOException {
-        for (FlowRegistryClientNode registryClientNode : flowManager.getAllFlowRegistryClients()) {
-            if (registryClientNode.isStorageLocationApplicable(storageLocation)) {
-                return registryClientNode;
+            for (final Map.Entry<String, VersionedParameterContext> childParameterContext : childParameterContexts.entrySet()) {
+                // We favor the context instance from the enclosing versioned flow
+                accumulatedParameterContexts.putIfAbsent(childParameterContext.getKey(), childParameterContext.getValue());
             }
         }
 
-        throw new FlowRegistryException(String.format("No applicable registry found for storage location %s", storageLocation));
+        return accumulatedParameterContexts;
+    }
+
+    private RegisteredFlowSnapshot fetchFlowContents(final FlowRegistryClientUserContext context, final VersionedFlowCoordinates coordinates,
+                                                     final boolean fetchRemoteFlows) throws FlowRegistryException {
+
+        final String storageLocation = coordinates.getStorageLocation() == null ? coordinates.getRegistryUrl() : coordinates.getStorageLocation();
+        final String bucketId = coordinates.getBucketId();
+        final String flowId = coordinates.getFlowId();
+        final int version = coordinates.getVersion();
+
+        final List<FlowRegistryClientNode> clientNodes = getRegistryClientsForInternalFlow(storageLocation);
+        for (final FlowRegistryClientNode clientNode : clientNodes) {
+            try {
+                logger.debug("Attempting to fetch flow for Bucket [{}] Flow [{}] Version [{}] using {}", bucketId, flowId, version, clientNode);
+                final FlowSnapshotContainer snapshotContainer = clientNode.getFlowContents(context, bucketId, flowId, version, fetchRemoteFlows);
+                final RegisteredFlowSnapshot snapshot = snapshotContainer.getFlowSnapshot();
+                coordinates.setRegistryId(clientNode.getIdentifier());
+
+                logger.debug("Successfully fetched flow for Bucket [{}] Flow [{}] Version [{}] using {}", bucketId, flowId, version, clientNode);
+                return snapshot;
+            } catch (final Exception e) {
+                logger.debug("Failed to fetch flow", e);
+            }
+        }
+
+        throw new FlowRegistryException(String.format("Could not find any Registry Client that was able to fetch flow with Bucket [%s] Flow [%s] Version [%s] with Storage Location [%s]",
+            bucketId, flowId, version, storageLocation));
+    }
+
+    private List<FlowRegistryClientNode> getRegistryClientsForInternalFlow(final String storageLocation) {
+        // Sort clients based on whether or not they believe they are applicable for the given storage location
+        final List<FlowRegistryClientNode> matchingClients = new ArrayList<>(flowManager.getAllFlowRegistryClients());
+        matchingClients.sort(Comparator.comparing(client -> client.isStorageLocationApplicable(storageLocation) ? -1 : 1));
+        return matchingClients;
     }
 
     private RegisteredFlowSnapshot createRegisteredFlowSnapshot(

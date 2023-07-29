@@ -29,6 +29,7 @@ org.apache.nifi.processors.standard.DetectDuplicate
 org.apache.nifi.processors.standard.DeduplicateRecord
 org.apache.nifi.processors.standard.DistributeLoad
 org.apache.nifi.processors.standard.DuplicateFlowFile
+org.apache.nifi.processors.standard.EncodeContent
 org.apache.nifi.processors.standard.EncryptContent
 org.apache.nifi.processors.standard.EnforceOrder
 org.apache.nifi.processors.standard.EvaluateJsonPath
@@ -39,6 +40,7 @@ org.apache.nifi.processors.standard.ExecuteSQL
 org.apache.nifi.processors.standard.ExecuteSQLRecord
 org.apache.nifi.processors.standard.ExecuteStreamCommand
 org.apache.nifi.processors.standard.ExtractGrok
+org.apache.nifi.processors.standard.ExtractRecordSchema
 org.apache.nifi.processors.standard.ExtractText
 org.apache.nifi.processors.standard.FetchDistributedMapCache
 org.apache.nifi.processors.standard.FetchFile
@@ -47,6 +49,7 @@ org.apache.nifi.processors.standard.FetchSFTP
 org.apache.nifi.processors.standard.FlattenJson
 org.apache.nifi.processors.standard.ForkRecord
 org.apache.nifi.processors.standard.ForkEnrichment
+org.apache.nifi.processors.standard.GenerateRecord
 org.apache.nifi.processors.standard.GenerateFlowFile
 org.apache.nifi.processors.standard.GenerateTableFetch
 org.apache.nifi.processors.standard.GetFile
@@ -104,6 +107,7 @@ org.apache.nifi.processors.standard.PutUDP
 org.apache.nifi.processors.standard.QueryDatabaseTable
 org.apache.nifi.processors.standard.QueryDatabaseTableRecord
 org.apache.nifi.processors.standard.QueryRecord
+org.apache.nifi.processors.standard.RemoveRecordField
 org.apache.nifi.processors.standard.ReplaceText
 org.apache.nifi.processors.standard.ReplaceTextWithMapping
 org.apache.nifi.processors.standard.RetryFlowFile
@@ -123,8 +127,10 @@ org.apache.nifi.processors.standard.TailFile
 org.apache.nifi.processors.standard.TransformXml
 org.apache.nifi.processors.standard.UnpackContent
 org.apache.nifi.processors.standard.UpdateCounter
+org.apache.nifi.processors.standard.UpdateDatabaseTable
 org.apache.nifi.processors.standard.UpdateRecord
 org.apache.nifi.processors.standard.ValidateCsv
+org.apache.nifi.processors.standard.ValidateJson
 org.apache.nifi.processors.standard.ValidateRecord
 org.apache.nifi.processors.standard.ValidateXml
 org.apache.nifi.processors.standard.Wait

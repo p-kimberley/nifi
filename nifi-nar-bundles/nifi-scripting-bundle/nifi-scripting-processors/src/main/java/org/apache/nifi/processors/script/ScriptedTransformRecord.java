@@ -118,6 +118,9 @@ public class ScriptedTransformRecord extends ScriptedRecordProcessor {
                 final ScriptEngine scriptEngine = scriptRunner.getScriptEngine();
                 evaluator = createEvaluator(scriptEngine, flowFile);
             } catch (final ScriptException se) {
+                if (getLogger().isDebugEnabled()) {
+                    getLogger().debug("Script as executed by NiFi with preloads {}", scriptRunner.getScript());
+                }
                 getLogger().error("Failed to initialize script engine", se);
                 session.transfer(flowFile, REL_FAILURE);
                 return;
@@ -134,6 +137,7 @@ public class ScriptedTransformRecord extends ScriptedRecordProcessor {
 
         final RecordReaderFactory readerFactory = context.getProperty(RECORD_READER).asControllerService(RecordReaderFactory.class);
         final RecordSetWriterFactory writerFactory = context.getProperty(RECORD_WRITER).asControllerService(RecordSetWriterFactory.class);
+        final Map<String, String> originalAttributes = flowFile.getAttributes();
 
         final RecordCounts counts = new RecordCounts();
         try {
@@ -162,10 +166,8 @@ public class ScriptedTransformRecord extends ScriptedRecordProcessor {
                             record.incorporateInactiveFields();
 
                             if (writer == null) {
-                                final RecordSchema writerSchema;
-                                writerSchema = record.getSchema();
-
                                 try {
+                                    final RecordSchema writerSchema = writerFactory.getSchema(originalAttributes, record.getSchema());
                                     writer = writerFactory.createWriter(getLogger(), writerSchema, out, flowFile);
                                 } catch (SchemaNotFoundException e) {
                                     throw new IOException(e);

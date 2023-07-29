@@ -19,7 +19,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-groovyx-bundle</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
     <artifactId>nifi-groovyx-nar</artifactId>
@@ -27,14 +27,14 @@
     <properties>
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <source.skip>true</source.skip>
-        <ant.version>1.10.12</ant.version>
+        <ant.version>1.10.13</ant.version>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-standard-services-api-nar</artifactId>
-            <version>1.19.0-SNAPSHOT</version>
+            <version>1.23.0</version>
             <type>nar</type>
         </dependency>
         <dependency>

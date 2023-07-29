@@ -19,7 +19,6 @@ package org.apache.nifi.controller;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.admin.service.AuditService;
 import org.apache.nifi.annotation.lifecycle.OnConfigurationRestored;
-import org.apache.nifi.annotation.notification.OnPrimaryNodeStateChange;
 import org.apache.nifi.annotation.notification.PrimaryNodeState;
 import org.apache.nifi.authorization.Authorizer;
 import org.apache.nifi.authorization.Resource;
@@ -114,8 +113,11 @@ import org.apache.nifi.controller.serialization.FlowSynchronizer;
 import org.apache.nifi.controller.serialization.ScheduledStateLookup;
 import org.apache.nifi.controller.service.ControllerServiceNode;
 import org.apache.nifi.controller.service.ControllerServiceProvider;
+import org.apache.nifi.controller.service.ControllerServiceResolver;
 import org.apache.nifi.controller.service.StandardConfigurationContext;
 import org.apache.nifi.controller.service.StandardControllerServiceProvider;
+import org.apache.nifi.controller.service.StandardControllerServiceResolver;
+import org.apache.nifi.controller.service.StandardControllerServiceApiLookup;
 import org.apache.nifi.controller.state.manager.StandardStateManagerProvider;
 import org.apache.nifi.controller.state.server.ZooKeeperStateServer;
 import org.apache.nifi.controller.status.NodeStatus;
@@ -168,6 +170,7 @@ import org.apache.nifi.provenance.ProvenanceRepository;
 import org.apache.nifi.provenance.StandardProvenanceAuthorizableFactory;
 import org.apache.nifi.provenance.StandardProvenanceEventRecord;
 import org.apache.nifi.registry.VariableRegistry;
+import org.apache.nifi.registry.flow.mapping.NiFiRegistryFlowMapper;
 import org.apache.nifi.registry.flow.mapping.VersionedComponentStateLookup;
 import org.apache.nifi.registry.variable.MutableVariableRegistry;
 import org.apache.nifi.remote.HttpRemoteSiteListener;
@@ -279,6 +282,7 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
     private final AtomicBoolean initialized = new AtomicBoolean(false);
     private final AtomicBoolean flowSynchronized = new AtomicBoolean(false);
     private final StandardControllerServiceProvider controllerServiceProvider;
+    private final StandardControllerServiceResolver controllerServiceResolver;
     private final Authorizer authorizer;
     private final AuditService auditService;
     private final EventDrivenWorkerQueue eventDrivenWorkerQueue;
@@ -545,6 +549,8 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
         flowManager = new StandardFlowManager(nifiProperties, sslContext, this, flowFileEventRepository, parameterContextManager);
 
         controllerServiceProvider = new StandardControllerServiceProvider(processScheduler, bulletinRepository, flowManager, extensionManager);
+        controllerServiceResolver = new StandardControllerServiceResolver(authorizer, flowManager, new NiFiRegistryFlowMapper(extensionManager),
+                controllerServiceProvider, new StandardControllerServiceApiLookup(extensionManager));
         flowManager.initialize(controllerServiceProvider);
 
         eventDrivenSchedulingAgent = new EventDrivenSchedulingAgent(
@@ -1173,9 +1179,8 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
         LOG.info("Creating Content Repository [{}]", implementationClassName);
         try {
             final ContentRepository contentRepo = NarThreadContextClassLoader.createInstance(extensionManager, implementationClassName, ContentRepository.class, properties);
-            synchronized (contentRepo) {
-                contentRepo.initialize(new StandardContentRepositoryContext(resourceClaimManager, createEventReporter()));
-            }
+            contentRepo.initialize(new StandardContentRepositoryContext(resourceClaimManager, createEventReporter()));
+
             return contentRepo;
         } catch (final Exception e) {
             throw new RuntimeException(e);
@@ -1567,7 +1572,7 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
     public void setMaxTimerDrivenThreadCount(final int maxThreadCount) {
         writeLock.lock();
         try {
-            setMaxThreadCount(maxThreadCount, this.timerDrivenEngineRef.get(), this.maxTimerDrivenThreads);
+            setMaxThreadCount(maxThreadCount, "Timer Driven", this.timerDrivenEngineRef.get(), this.maxTimerDrivenThreads);
         } finally {
             writeLock.unlock("setMaxTimerDrivenThreadCount");
         }
@@ -1576,7 +1581,7 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
     public void setMaxEventDrivenThreadCount(final int maxThreadCount) {
         writeLock.lock();
         try {
-            setMaxThreadCount(maxThreadCount, this.eventDrivenEngineRef.get(), this.maxEventDrivenThreads);
+            setMaxThreadCount(maxThreadCount, "Event Driven", this.eventDrivenEngineRef.get(), this.maxEventDrivenThreads);
             processScheduler.setMaxThreadCount(SchedulingStrategy.EVENT_DRIVEN, maxThreadCount);
         } finally {
             writeLock.unlock("setMaxEventDrivenThreadCount");
@@ -1587,16 +1592,23 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
      * Updates the number of threads that can be simultaneously used for executing processors.
      * This method must be called while holding the write lock!
      *
-     * @param maxThreadCount max number of threads
+     * @param maxThreadCount Requested new thread pool size
+     * @param poolName Thread Pool Name
+     * @param engine Flow Engine executor or null when terminated
+     * @param maxThreads Internal tracker for Maximum Threads
      */
-    private void setMaxThreadCount(final int maxThreadCount, final FlowEngine engine, final AtomicInteger maxThreads) {
+    private void setMaxThreadCount(final int maxThreadCount, final String poolName, final FlowEngine engine, final AtomicInteger maxThreads) {
         if (maxThreadCount < 1) {
-            throw new IllegalArgumentException("Cannot set max number of threads to less than 2");
+            throw new IllegalArgumentException("Cannot set max number of threads to less than 1");
         }
 
         maxThreads.getAndSet(maxThreadCount);
-        if (null != engine && engine.getCorePoolSize() < maxThreadCount) {
-            engine.setCorePoolSize(maxThreads.intValue());
+        if (engine == null) {
+            LOG.debug("[{}] Engine not found: Maximum Thread Count not updated", poolName);
+        } else {
+            final int previousCorePoolSize = engine.getCorePoolSize();
+            engine.setCorePoolSize(maxThreadCount);
+            LOG.info("[{}] Maximum Thread Count updated [{}] previous [{}]", poolName, maxThreadCount, previousCorePoolSize);
         }
     }
 
@@ -2089,6 +2101,9 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
         return controllerServiceProvider;
     }
 
+    public ControllerServiceResolver getControllerServiceResolver() {
+        return controllerServiceResolver;
+    }
 
     public VariableRegistry getVariableRegistry() {
         return variableRegistry;
@@ -2513,21 +2528,15 @@ public class FlowController implements ReportingTaskProvider, Authorizable, Node
     public void setPrimary(final boolean primary) {
         final PrimaryNodeState nodeState = primary ? PrimaryNodeState.ELECTED_PRIMARY_NODE : PrimaryNodeState.PRIMARY_NODE_REVOKED;
         final ProcessGroup rootGroup = flowManager.getRootGroup();
+
         for (final ProcessorNode procNode : rootGroup.findAllProcessors()) {
-            try (final NarCloseable narCloseable = NarCloseable.withComponentNarLoader(extensionManager, procNode.getProcessor().getClass(), procNode.getIdentifier())) {
-                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, procNode.getProcessor(), nodeState);
-            }
+            processScheduler.submitFrameworkTask(() -> processScheduler.notifyPrimaryNodeStateChange(procNode, nodeState) );
         }
         for (final ControllerServiceNode serviceNode : flowManager.getAllControllerServices()) {
-            final Class<?> serviceImplClass = serviceNode.getControllerServiceImplementation().getClass();
-            try (final NarCloseable narCloseable = NarCloseable.withComponentNarLoader(extensionManager, serviceImplClass, serviceNode.getIdentifier())) {
-                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, serviceNode.getControllerServiceImplementation(), nodeState);
-            }
+            processScheduler.submitFrameworkTask(() -> processScheduler.notifyPrimaryNodeStateChange(serviceNode, nodeState) );
         }
         for (final ReportingTaskNode reportingTaskNode : getAllReportingTasks()) {
-            try (final NarCloseable narCloseable = NarCloseable.withComponentNarLoader(extensionManager, reportingTaskNode.getReportingTask().getClass(), reportingTaskNode.getIdentifier())) {
-                ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, reportingTaskNode.getReportingTask(), nodeState);
-            }
+            processScheduler.submitFrameworkTask(() -> processScheduler.notifyPrimaryNodeStateChange(reportingTaskNode, nodeState) );
         }
 
         // update primary

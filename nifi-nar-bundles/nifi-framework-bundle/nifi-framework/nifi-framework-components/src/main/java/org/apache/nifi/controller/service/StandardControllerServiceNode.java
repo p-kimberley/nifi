@@ -21,6 +21,8 @@ import org.apache.nifi.annotation.behavior.Restricted;
 import org.apache.nifi.annotation.documentation.DeprecationNotice;
 import org.apache.nifi.annotation.lifecycle.OnDisabled;
 import org.apache.nifi.annotation.lifecycle.OnEnabled;
+import org.apache.nifi.annotation.notification.OnPrimaryNodeStateChange;
+import org.apache.nifi.annotation.notification.PrimaryNodeState;
 import org.apache.nifi.authorization.Resource;
 import org.apache.nifi.authorization.resource.Authorizable;
 import org.apache.nifi.authorization.resource.ResourceFactory;
@@ -56,6 +58,7 @@ import org.apache.nifi.nar.NarCloseable;
 import org.apache.nifi.parameter.ParameterContext;
 import org.apache.nifi.parameter.ParameterLookup;
 import org.apache.nifi.processor.SimpleProcessLogger;
+import org.apache.nifi.logging.StandardLoggingContext;
 import org.apache.nifi.registry.ComponentVariableRegistry;
 import org.apache.nifi.util.CharacterFilterUtils;
 import org.apache.nifi.util.FormatUtils;
@@ -66,6 +69,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -76,9 +80,11 @@ import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -570,6 +576,7 @@ public class StandardControllerServiceNode extends AbstractComponentNode impleme
 
             final ControllerServiceProvider controllerServiceProvider = this.serviceProvider;
             final StandardControllerServiceNode service = this;
+            AtomicLong enablingAttemptCount = new AtomicLong(0);
             scheduler.execute(new Runnable() {
                 @Override
                 public void run() {
@@ -588,7 +595,20 @@ public class StandardControllerServiceNode extends AbstractComponentNode impleme
                         LOG.debug("Cannot enable {} because it is not currently valid. (Validation State is {}: {}). Will try again in 1 second",
                             StandardControllerServiceNode.this, validationState, validationState.getValidationErrors());
 
-                        scheduler.schedule(this, 1, TimeUnit.SECONDS);
+                        enablingAttemptCount.incrementAndGet();
+                        if (enablingAttemptCount.get() == 120 || enablingAttemptCount.get() % 3600 == 0) {
+                            final ComponentLog componentLog = new SimpleProcessLogger(getIdentifier(), StandardControllerServiceNode.this,
+                                    new StandardLoggingContext(StandardControllerServiceNode.this));
+                            componentLog.error("Encountering difficulty enabling. (Validation State is {}: {}). Will continue trying to enable.",
+                                    validationState, validationState.getValidationErrors());
+                        }
+
+                        try {
+                            scheduler.schedule(this, 1, TimeUnit.SECONDS);
+                        } catch (RejectedExecutionException rejectedExecutionException) {
+                            LOG.error("Unable to enable {}.  Last known validation state was {} : {}", StandardControllerServiceNode.this, validationState, validationState.getValidationErrors(),
+                                    rejectedExecutionException);
+                        }
                         future.complete(null);
                         return;
                     }
@@ -617,7 +637,8 @@ public class StandardControllerServiceNode extends AbstractComponentNode impleme
                         future.completeExceptionally(e);
 
                         final Throwable cause = e instanceof InvocationTargetException ? e.getCause() : e;
-                        final ComponentLog componentLog = new SimpleProcessLogger(getIdentifier(), StandardControllerServiceNode.this);
+                        final ComponentLog componentLog = new SimpleProcessLogger(getIdentifier(), StandardControllerServiceNode.this,
+                                new StandardLoggingContext(StandardControllerServiceNode.this));
                         componentLog.error("Failed to invoke @OnEnabled method", cause);
                         invokeDisable(configContext);
 
@@ -699,7 +720,7 @@ public class StandardControllerServiceNode extends AbstractComponentNode impleme
             LOG.debug("Successfully disabled {}", this);
         } catch (Exception e) {
             final Throwable cause = e instanceof InvocationTargetException ? e.getCause() : e;
-            final ComponentLog componentLog = new SimpleProcessLogger(getIdentifier(), StandardControllerServiceNode.this);
+            final ComponentLog componentLog = new SimpleProcessLogger(getIdentifier(), StandardControllerServiceNode.this, new StandardLoggingContext(StandardControllerServiceNode.this));
             componentLog.error("Failed to invoke @OnDisabled method due to {}", cause);
             LOG.error("Failed to invoke @OnDisabled method of {} due to {}", getControllerServiceImplementation(), cause.toString());
         }
@@ -764,6 +785,19 @@ public class StandardControllerServiceNode extends AbstractComponentNode impleme
 
         LogRepositoryFactory.getRepository(getIdentifier()).setObservationLevel(BULLETIN_OBSERVER_ID, level);
         this.bulletinLevel = level;
+    }
+
+    @Override
+    public void notifyPrimaryNodeChanged(final PrimaryNodeState nodeState) {
+        final Class<?> implementationClass = getControllerServiceImplementation().getClass();
+        final List<Method> methods = ReflectionUtils.findMethodsWithAnnotations(implementationClass, new Class[] {OnPrimaryNodeStateChange.class});
+        if (methods.isEmpty()) {
+            return;
+        }
+
+        try (final NarCloseable narCloseable = NarCloseable.withComponentNarLoader(getExtensionManager(), implementationClass, getIdentifier())) {
+            ReflectionUtils.quietlyInvokeMethodsWithAnnotation(OnPrimaryNodeStateChange.class, getControllerServiceImplementation(), nodeState);
+        }
     }
 
 }

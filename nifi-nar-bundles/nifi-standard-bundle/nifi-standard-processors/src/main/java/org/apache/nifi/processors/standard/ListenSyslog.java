@@ -31,9 +31,11 @@ import org.apache.nifi.components.PropertyValue;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.event.transport.EventServer;
+import org.apache.nifi.event.transport.configuration.ShutdownQuietPeriod;
 import org.apache.nifi.event.transport.configuration.TransportProtocol;
 import org.apache.nifi.event.transport.message.ByteArrayMessage;
 import org.apache.nifi.event.transport.netty.ByteArrayMessageNettyEventServerFactory;
+import org.apache.nifi.event.transport.netty.FilteringStrategy;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.processor.DataUnit;
@@ -287,7 +289,8 @@ public class ListenSyslog extends AbstractSyslogProcessor {
 
         final InetAddress address = getListenAddress(networkInterfaceName);
         final ByteArrayMessageNettyEventServerFactory factory = new ByteArrayMessageNettyEventServerFactory(getLogger(),
-                address, port, transportProtocol, messageDemarcatorBytes, receiveBufferSize, syslogEvents);
+                address, port, transportProtocol, messageDemarcatorBytes, receiveBufferSize, syslogEvents, FilteringStrategy.EMPTY);
+        factory.setShutdownQuietPeriod(ShutdownQuietPeriod.QUICK.getDuration());
         factory.setThreadNamePrefix(String.format("%s[%s]", ListenSyslog.class.getSimpleName(), getIdentifier()));
         final int maxConnections = context.getProperty(MAX_CONNECTIONS).asLong().intValue();
         factory.setWorkerThreads(maxConnections);
@@ -308,6 +311,10 @@ public class ListenSyslog extends AbstractSyslogProcessor {
             factory.setClientAuth(clientAuth);
         }
         eventServer = factory.getEventServer();
+    }
+
+    public int getListeningPort() {
+        return eventServer == null ? 0 : eventServer.getListeningPort();
     }
 
     @OnStopped
@@ -445,7 +452,7 @@ public class ListenSyslog extends AbstractSyslogProcessor {
     }
 
     private Map<String, String> getDefaultAttributes(final ProcessContext context) {
-        final String port = context.getProperty(PORT).evaluateAttributeExpressions().getValue();
+        final String port = String.valueOf(getListeningPort());
         final String protocol = context.getProperty(PROTOCOL).getValue();
 
         final Map<String, String> defaultAttributes = new HashMap<>();

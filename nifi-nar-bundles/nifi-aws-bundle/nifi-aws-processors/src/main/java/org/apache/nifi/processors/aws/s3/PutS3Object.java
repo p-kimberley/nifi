@@ -276,12 +276,48 @@ public class PutS3Object extends AbstractS3Processor {
             .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
             .build();
 
-    public static final List<PropertyDescriptor> properties = Collections.unmodifiableList(
-            Arrays.asList(KEY, BUCKET, CONTENT_TYPE, CONTENT_DISPOSITION, CACHE_CONTROL, ACCESS_KEY, SECRET_KEY, CREDENTIALS_FILE, AWS_CREDENTIALS_PROVIDER_SERVICE,
-                    OBJECT_TAGS_PREFIX, REMOVE_TAG_PREFIX, STORAGE_CLASS, REGION, TIMEOUT, EXPIRATION_RULE_ID, FULL_CONTROL_USER_LIST, READ_USER_LIST, WRITE_USER_LIST,
-                    READ_ACL_LIST, WRITE_ACL_LIST, OWNER, CANNED_ACL, SSL_CONTEXT_SERVICE, ENDPOINT_OVERRIDE, SIGNER_OVERRIDE, MULTIPART_THRESHOLD, MULTIPART_PART_SIZE,
-                    MULTIPART_S3_AGEOFF_INTERVAL, MULTIPART_S3_MAX_AGE, MULTIPART_TEMP_DIR, SERVER_SIDE_ENCRYPTION, ENCRYPTION_SERVICE, USE_CHUNKED_ENCODING,
-                    USE_PATH_STYLE_ACCESS, PROXY_CONFIGURATION_SERVICE, PROXY_HOST, PROXY_HOST_PORT, PROXY_USERNAME, PROXY_PASSWORD));
+    public static final List<PropertyDescriptor> properties = Collections.unmodifiableList(Arrays.asList(
+            KEY,
+            BUCKET,
+            CONTENT_TYPE,
+            CONTENT_DISPOSITION,
+            CACHE_CONTROL,
+            ACCESS_KEY,
+            SECRET_KEY,
+            CREDENTIALS_FILE,
+            AWS_CREDENTIALS_PROVIDER_SERVICE,
+            OBJECT_TAGS_PREFIX,
+            REMOVE_TAG_PREFIX,
+            STORAGE_CLASS,
+            S3_REGION,
+            TIMEOUT,
+            EXPIRATION_RULE_ID,
+            FULL_CONTROL_USER_LIST,
+            READ_USER_LIST,
+            WRITE_USER_LIST,
+            READ_ACL_LIST,
+            WRITE_ACL_LIST,
+            OWNER,
+            CANNED_ACL,
+            SSL_CONTEXT_SERVICE,
+            ENDPOINT_OVERRIDE,
+            SIGNER_OVERRIDE,
+            S3_CUSTOM_SIGNER_CLASS_NAME,
+            S3_CUSTOM_SIGNER_MODULE_LOCATION,
+            MULTIPART_THRESHOLD,
+            MULTIPART_PART_SIZE,
+            MULTIPART_S3_AGEOFF_INTERVAL,
+            MULTIPART_S3_MAX_AGE,
+            MULTIPART_TEMP_DIR,
+            SERVER_SIDE_ENCRYPTION,
+            ENCRYPTION_SERVICE,
+            USE_CHUNKED_ENCODING,
+            USE_PATH_STYLE_ACCESS,
+            PROXY_CONFIGURATION_SERVICE,
+            PROXY_HOST,
+            PROXY_HOST_PORT,
+            PROXY_USERNAME,
+            PROXY_PASSWORD));
 
     final static String S3_BUCKET_KEY = "s3.bucket";
     final static String S3_OBJECT_KEY = "s3.key";
@@ -467,8 +503,20 @@ public class PutS3Object extends AbstractS3Processor {
 
     @Override
     public void onTrigger(final ProcessContext context, final ProcessSession session) {
+
         FlowFile flowFile = session.get();
         if (flowFile == null) {
+            return;
+        }
+
+        final AmazonS3Client s3;
+
+        try {
+           s3  = getS3Client(context, flowFile.getAttributes());
+        } catch (Exception e) {
+            getLogger().error("Failed to initialize S3 client", e);
+            flowFile = session.penalize(flowFile);
+            session.transfer(flowFile, REL_FAILURE);
             return;
         }
 
@@ -478,7 +526,6 @@ public class PutS3Object extends AbstractS3Processor {
         final String key = context.getProperty(KEY).evaluateAttributeExpressions(flowFile).getValue();
         final String cacheKey = getIdentifier() + "/" + bucket + "/" + key;
 
-        final AmazonS3Client s3 = getClient();
         final FlowFile ff = flowFile;
         final Map<String, String> attributes = new HashMap<>();
         final String ffFilename = ff.getAttributes().get(CoreAttributes.FILENAME.key());
@@ -933,7 +980,7 @@ public class PutS3Object extends AbstractS3Processor {
         final List<Tag> objectTags = new ArrayList<>();
         final Map<String, String> attributesMap = flowFile.getAttributes();
 
-        attributesMap.entrySet().stream().sequential()
+        attributesMap.entrySet().stream()
         .filter(attribute -> attribute.getKey().startsWith(prefix))
         .forEach(attribute -> {
             String tagKey = attribute.getKey();

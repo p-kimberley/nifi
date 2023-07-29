@@ -39,6 +39,7 @@ public class ProcessGroupDTO extends ComponentDTO {
     private String defaultFlowFileExpiration;
     private Long defaultBackPressureObjectThreshold;
     private String defaultBackPressureDataSizeThreshold;
+    private String logFileSuffix;
 
     private Integer runningCount;
     private Integer stoppedCount;
@@ -358,7 +359,7 @@ public class ProcessGroupDTO extends ComponentDTO {
         this.parameterContext = parameterContext;
     }
 
-    @ApiModelProperty(value = "The FlowFile Concurrency for this Process Group.", allowableValues = "UNBOUNDED, SINGLE_FLOWFILE_PER_NODE")
+    @ApiModelProperty(value = "The FlowFile Concurrency for this Process Group.", allowableValues = "UNBOUNDED, SINGLE_FLOWFILE_PER_NODE, SINGLE_BATCH_PER_NODE")
     public String getFlowfileConcurrency() {
         return flowfileConcurrency;
     }
@@ -402,5 +403,14 @@ public class ProcessGroupDTO extends ComponentDTO {
 
     public void setDefaultBackPressureDataSizeThreshold(final String defaultBackPressureDataSizeThreshold) {
         this.defaultBackPressureDataSizeThreshold = defaultBackPressureDataSizeThreshold;
+    }
+
+    @ApiModelProperty(value = "The log file suffix for this Process Group for dedicated logging.")
+    public String getLogFileSuffix() {
+        return logFileSuffix;
+    }
+
+    public void setLogFileSuffix(final String logFileSuffix) {
+        this.logFileSuffix = logFileSuffix;
     }
 }

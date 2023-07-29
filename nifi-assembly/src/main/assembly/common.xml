@@ -28,8 +28,10 @@
                 <include>*:nifi-bootstrap</include>
                 <include>*:slf4j-api</include>
                 <include>*:logback-classic</include>
+                <include>*:logback-core</include>
                 <include>*:nifi-api</include>
                 <include>*:nifi-property-protection-api</include>
+                <include>*:nifi-per-process-group-logging</include>
             </includes>
         </dependencySet>
 

@@ -29,7 +29,6 @@ import static groovy.json.JsonOutput.toJson
 import static org.hamcrest.CoreMatchers.equalTo
 import static org.hamcrest.CoreMatchers.is
 import static org.hamcrest.MatcherAssert.assertThat
-
 import static org.junit.jupiter.api.Assertions.assertEquals
 import static org.junit.jupiter.api.Assertions.assertThrows
 
@@ -191,6 +190,18 @@ class GetElasticsearchTest {
 
     @Test
     void testRequestParameters() {
+        final TestRunner runner = createRunner()
+        runner.setProperty(GetElasticsearch.ID, "\${noAttribute}")
+
+        runProcessor(runner)
+        testCounts(runner, 0, 1, 0, 0)
+        final FlowFile failed = runner.getFlowFilesForRelationship(GetElasticsearch.REL_FAILURE).get(0)
+        failed.assertAttributeEquals("elasticsearch.get.error", GetElasticsearch.ID.getDisplayName() + " is blank (after evaluating attribute expressions), cannot GET document")
+        reset(runner)
+    }
+
+    @Test
+    void testEmptyId() {
         final TestRunner runner = createRunner()
         runner.setProperty("refresh", "true")
         runner.setProperty("_source", '${source}')

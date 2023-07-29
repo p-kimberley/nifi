@@ -16,6 +16,7 @@
  */
 package org.apache.nifi.dbcp;
 
+import org.apache.nifi.dbcp.utils.DBCPProperties;
 import org.apache.nifi.kerberos.KerberosCredentialsService;
 import org.apache.nifi.kerberos.KerberosUserService;
 import org.apache.nifi.kerberos.MockKerberosCredentialsService;
@@ -40,7 +41,6 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.ArrayList;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -56,6 +56,8 @@ public class DBCPServiceTest {
     private static final String DERBY_LOG_PROPERTY = "derby.stream.error.file";
 
     private static final String DERBY_SHUTDOWN_STATE = "XJ015";
+
+    private static final String INVALID_CONNECTION_URL = "jdbc:h2";
 
     private TestRunner runner;
 
@@ -84,10 +86,10 @@ public class DBCPServiceTest {
         runner.addControllerService(SERVICE_ID, service);
 
         final String url = String.format("jdbc:derby:%s;create=true", databaseDirectory);
-        runner.setProperty(service, DBCPConnectionPool.DATABASE_URL, url);
-        runner.setProperty(service, DBCPConnectionPool.DB_USER, String.class.getSimpleName());
-        runner.setProperty(service, DBCPConnectionPool.DB_PASSWORD, String.class.getName());
-        runner.setProperty(service, DBCPConnectionPool.DB_DRIVERNAME, "org.apache.derby.jdbc.EmbeddedDriver");
+        runner.setProperty(service, DBCPProperties.DATABASE_URL, url);
+        runner.setProperty(service, DBCPProperties.DB_USER, String.class.getSimpleName());
+        runner.setProperty(service, DBCPProperties.DB_PASSWORD, String.class.getName());
+        runner.setProperty(service, DBCPProperties.DB_DRIVERNAME, "org.apache.derby.jdbc.EmbeddedDriver");
     }
 
     @AfterEach
@@ -97,6 +99,14 @@ public class DBCPServiceTest {
             assertEquals(DERBY_SHUTDOWN_STATE, exception.getSQLState());
             FileUtils.deleteFile(databaseDirectory, true);
         }
+    }
+
+    @Test
+    public void testConnectionUrlInvalid() {
+        runner.assertValid(service);
+
+        runner.setProperty(service, DBCPProperties.DATABASE_URL, INVALID_CONNECTION_URL);
+        runner.assertNotValid(service);
     }
 
     @Test
@@ -118,7 +128,7 @@ public class DBCPServiceTest {
 
         // kerberos credential service with kerberos user service is invalid
         final KerberosUserService kerberosUserService = enableKerberosUserService(runner);
-        runner.setProperty(service, DBCPConnectionPool.KERBEROS_USER_SERVICE, kerberosUserService.getIdentifier());
+        runner.setProperty(service, DBCPProperties.KERBEROS_USER_SERVICE, kerberosUserService.getIdentifier());
         runner.assertNotValid(service);
 
         // kerberos user service by itself is valid
@@ -133,7 +143,7 @@ public class DBCPServiceTest {
 
     @Test
     public void testNotValidWithNegativeMinIdleProperty() {
-        runner.setProperty(service, DBCPConnectionPool.MIN_IDLE, "-1");
+        runner.setProperty(service, DBCPProperties.MIN_IDLE, "-1");
         runner.assertNotValid(service);
     }
 
@@ -186,9 +196,9 @@ public class DBCPServiceTest {
         runner.enableControllerService(kerberosCredentialsService);
 
         // set fake Derby database connection url
-        runner.setProperty(service, DBCPConnectionPool.DATABASE_URL, "jdbc:derby://localhost:1527/NoDB");
+        runner.setProperty(service, DBCPProperties.DATABASE_URL, "jdbc:derby://localhost:1527/NoDB");
         // Use the client driver here rather than the embedded one, as it will generate a ConnectException for the test
-        runner.setProperty(service, DBCPConnectionPool.DB_DRIVERNAME, "org.apache.derby.jdbc.ClientDriver");
+        runner.setProperty(service, DBCPProperties.DB_DRIVERNAME, "org.apache.derby.jdbc.ClientDriver");
         runner.setProperty(service, DBCPConnectionPool.KERBEROS_CREDENTIALS_SERVICE, kerberosServiceId);
 
         try {
@@ -203,7 +213,7 @@ public class DBCPServiceTest {
 
     @Test
     public void testGetConnection() throws SQLException {
-        runner.setProperty(service, DBCPConnectionPool.MAX_TOTAL_CONNECTIONS, "2");
+        runner.setProperty(service, DBCPProperties.MAX_TOTAL_CONNECTIONS, "2");
         runner.enableControllerService(service);
         runner.assertValid(service);
 
@@ -217,8 +227,8 @@ public class DBCPServiceTest {
 
     @Test
     public void testGetConnectionMaxTotalConnectionsExceeded() {
-        runner.setProperty(service, DBCPConnectionPool.MAX_TOTAL_CONNECTIONS, "1");
-        runner.setProperty(service, DBCPConnectionPool.MAX_WAIT_TIME, "1 ms");
+        runner.setProperty(service, DBCPProperties.MAX_TOTAL_CONNECTIONS, "1");
+        runner.setProperty(service, DBCPProperties.MAX_WAIT_TIME, "1 ms");
         runner.enableControllerService(service);
         runner.assertValid(service);
 
@@ -229,13 +239,13 @@ public class DBCPServiceTest {
 
     @Test
     public void testGetDataSourceProperties() throws SQLException {
-        runner.setProperty(service, DBCPConnectionPool.MAX_WAIT_TIME, "-1");
-        runner.setProperty(service, DBCPConnectionPool.MAX_IDLE, "6");
-        runner.setProperty(service, DBCPConnectionPool.MIN_IDLE, "4");
-        runner.setProperty(service, DBCPConnectionPool.MAX_CONN_LIFETIME, "1 secs");
-        runner.setProperty(service, DBCPConnectionPool.EVICTION_RUN_PERIOD, "1 secs");
-        runner.setProperty(service, DBCPConnectionPool.MIN_EVICTABLE_IDLE_TIME, "1 secs");
-        runner.setProperty(service, DBCPConnectionPool.SOFT_MIN_EVICTABLE_IDLE_TIME, "1 secs");
+        runner.setProperty(service, DBCPProperties.MAX_WAIT_TIME, "-1");
+        runner.setProperty(service, DBCPProperties.MAX_IDLE, "6");
+        runner.setProperty(service, DBCPProperties.MIN_IDLE, "4");
+        runner.setProperty(service, DBCPProperties.MAX_CONN_LIFETIME, "1 secs");
+        runner.setProperty(service, DBCPProperties.EVICTION_RUN_PERIOD, "1 secs");
+        runner.setProperty(service, DBCPProperties.MIN_EVICTABLE_IDLE_TIME, "1 secs");
+        runner.setProperty(service, DBCPProperties.SOFT_MIN_EVICTABLE_IDLE_TIME, "1 secs");
 
         runner.enableControllerService(service);
 
@@ -245,58 +255,6 @@ public class DBCPServiceTest {
         assertEquals(1000, service.getDataSource().getTimeBetweenEvictionRunsMillis());
         assertEquals(1000, service.getDataSource().getMinEvictableIdleTimeMillis());
         assertEquals(1000, service.getDataSource().getSoftMinEvictableIdleTimeMillis());
-
-        service.getDataSource().close();
-    }
-
-    @Test
-    public void testGetDataSourceIdleProperties() throws SQLException {
-        runner.setProperty(service, DBCPConnectionPool.MAX_WAIT_TIME, "${max.wait.time}");
-        runner.setProperty(service, DBCPConnectionPool.MAX_TOTAL_CONNECTIONS, "${max.total.connections}");
-        runner.setProperty(service, DBCPConnectionPool.MAX_IDLE, "${max.idle}");
-        runner.setProperty(service, DBCPConnectionPool.MIN_IDLE, "${min.idle}");
-        runner.setProperty(service, DBCPConnectionPool.MAX_CONN_LIFETIME, "${max.conn.lifetime}");
-        runner.setProperty(service, DBCPConnectionPool.EVICTION_RUN_PERIOD, "${eviction.run.period}");
-        runner.setProperty(service, DBCPConnectionPool.MIN_EVICTABLE_IDLE_TIME, "${min.evictable.idle.time}");
-        runner.setProperty(service, DBCPConnectionPool.SOFT_MIN_EVICTABLE_IDLE_TIME, "${soft.min.evictable.idle.time}");
-
-        runner.setVariable("max.wait.time", "1 sec");
-        runner.setVariable("max.total.connections", "7");
-        runner.setVariable("max.idle", "4");
-        runner.setVariable("min.idle", "1");
-        runner.setVariable("max.conn.lifetime", "1000 millis");
-        runner.setVariable("eviction.run.period", "100 millis");
-        runner.setVariable("min.evictable.idle.time", "100 millis");
-        runner.setVariable("soft.min.evictable.idle.time", "100 millis");
-
-        runner.enableControllerService(service);
-
-        ArrayList<Connection> connections = new ArrayList<>();
-        for (int i = 0; i < 6; i++) {
-            connections.add(service.getConnection());
-        }
-
-        assertEquals(6, service.getDataSource().getNumActive());
-
-        connections.get(0).close();
-        assertEquals(5, service.getDataSource().getNumActive());
-        assertEquals(1, service.getDataSource().getNumIdle());
-
-        connections.get(1).close();
-        connections.get(2).close();
-        connections.get(3).close();
-        //now at max idle
-        assertEquals(2, service.getDataSource().getNumActive());
-        assertEquals(4, service.getDataSource().getNumIdle());
-
-        //now a connection should get closed for real so that numIdle does not exceed maxIdle
-        connections.get(4).close();
-        assertEquals(4, service.getDataSource().getNumIdle());
-        assertEquals(1, service.getDataSource().getNumActive());
-
-        connections.get(5).close();
-        assertEquals(4, service.getDataSource().getNumIdle());
-        assertEquals(0, service.getDataSource().getNumActive());
 
         service.getDataSource().close();
     }

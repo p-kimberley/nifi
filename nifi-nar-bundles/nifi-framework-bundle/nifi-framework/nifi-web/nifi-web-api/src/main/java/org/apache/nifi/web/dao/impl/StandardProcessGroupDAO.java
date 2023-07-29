@@ -82,6 +82,10 @@ public class StandardProcessGroupDAO extends ComponentDAO implements ProcessGrou
             group.setPosition(new Position(processGroup.getPosition().getX(), processGroup.getPosition().getY()));
         }
 
+        if (processGroup.getComments() != null) {
+            group.setComments(processGroup.getComments());
+        }
+
         final ParameterContextReferenceEntity parameterContextReference = processGroup.getParameterContext();
         if (parameterContextReference != null && parameterContextReference.getId() != null) {
             final ParameterContext parameterContext = flowController.getFlowManager().getParameterContextManager().getParameterContext(parameterContextReference.getId());
@@ -343,6 +347,8 @@ public class StandardProcessGroupDAO extends ComponentDAO implements ProcessGrou
         final Long defaultBackPressureObjectThreshold = processGroupDTO.getDefaultBackPressureObjectThreshold();
         final String defaultBackPressureDataSizeThreshold = processGroupDTO.getDefaultBackPressureDataSizeThreshold();
 
+        final String logFileSuffix = processGroupDTO.getLogFileSuffix();
+
         final ParameterContextReferenceEntity parameterContextReference = processGroupDTO.getParameterContext();
         if (parameterContextReference != null) {
             final String parameterContextId = parameterContextReference.getId();
@@ -386,6 +392,10 @@ public class StandardProcessGroupDAO extends ComponentDAO implements ProcessGrou
         }
         if (defaultBackPressureDataSizeThreshold != null) {
             group.setDefaultBackPressureDataSizeThreshold(processGroupDTO.getDefaultBackPressureDataSizeThreshold());
+        }
+
+        if (logFileSuffix != null) {
+            group.setLogFileSuffix(logFileSuffix);
         }
 
         group.onComponentModified();

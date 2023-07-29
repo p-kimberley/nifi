@@ -24,7 +24,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-public class  VersionedProcessGroup extends VersionedComponent {
+public class VersionedProcessGroup extends VersionedComponent {
 
     private Set<VersionedProcessGroup> processGroups = new HashSet<>();
     private Set<VersionedRemoteProcessGroup> remoteProcessGroups = new HashSet<>();
@@ -46,6 +46,8 @@ public class  VersionedProcessGroup extends VersionedComponent {
     private String defaultFlowFileExpiration;
     private Long defaultBackPressureObjectThreshold;
     private String defaultBackPressureDataSizeThreshold;
+
+    private String logFileSuffix;
 
 
     @ApiModelProperty("The child Process Groups")
@@ -204,5 +206,14 @@ public class  VersionedProcessGroup extends VersionedComponent {
 
     public void setDefaultBackPressureDataSizeThreshold(final String defaultBackPressureDataSizeThreshold) {
         this.defaultBackPressureDataSizeThreshold = defaultBackPressureDataSizeThreshold;
+    }
+
+    @ApiModelProperty(value = "The log file suffix for this Process Group for dedicated logging.")
+    public String getLogFileSuffix() {
+        return logFileSuffix;
+    }
+
+    public void setLogFileSuffix(final String logFileSuffix) {
+        this.logFileSuffix = logFileSuffix;
     }
 }

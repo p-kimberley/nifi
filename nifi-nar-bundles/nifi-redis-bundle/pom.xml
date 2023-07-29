@@ -19,15 +19,15 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-nar-bundles</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
     <artifactId>nifi-redis-bundle</artifactId>
     <packaging>pom</packaging>
 
     <properties>
-        <spring.data.redis.version>2.7.2</spring.data.redis.version>
-        <jedis.version>3.8.0</jedis.version>
+        <spring.data.redis.version>2.7.10</spring.data.redis.version>
+        <jedis.version>3.10.0</jedis.version>
     </properties>
 
     <modules>

@@ -44,11 +44,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static junit.framework.TestCase.assertTrue;
-import static org.hamcrest.core.IsInstanceOf.instanceOf;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -117,7 +116,7 @@ public class ScriptedActionHandlerTest {
     public void testValidService() throws Exception {
         setupTestRunner();
         runner.assertValid(actionHandler);
-        assertThat(actionHandler, instanceOf(ScriptedActionHandler.class));
+        assertInstanceOf(ScriptedActionHandler.class, actionHandler);
     }
 
     @Test

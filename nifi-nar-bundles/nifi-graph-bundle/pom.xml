@@ -19,7 +19,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-nar-bundles</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
     <artifactId>nifi-graph-bundle</artifactId>
@@ -44,13 +44,13 @@
             <dependency>
                 <groupId>org.apache.nifi</groupId>
                 <artifactId>nifi-graph-processors</artifactId>
-                <version>1.19.0-SNAPSHOT</version>
+                <version>1.23.0</version>
             </dependency>
             <!-- Override commons-compress -->
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-compress</artifactId>
-                <version>1.21</version>
+                <version>1.23.0</version>
             </dependency>
             <dependency>
                 <groupId>org.codehaus.groovy</groupId>

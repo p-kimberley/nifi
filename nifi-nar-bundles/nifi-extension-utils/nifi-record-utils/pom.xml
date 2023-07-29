@@ -18,7 +18,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-extension-utils</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
     <packaging>pom</packaging>
     <artifactId>nifi-record-utils</artifactId>
@@ -29,6 +29,7 @@
 	      <module>nifi-hadoop-record-utils</module>
         <module>nifi-json-record-utils</module>
 	      <module>nifi-mock-record-utils</module>
+        <module>nifi-schema-inference-utils</module>
     </modules>
 
     <dependencyManagement>
@@ -42,7 +43,7 @@
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-compress</artifactId>
-                <version>1.21</version>
+                <version>1.23.0</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

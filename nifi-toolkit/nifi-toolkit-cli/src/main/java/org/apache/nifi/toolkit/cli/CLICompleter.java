@@ -77,6 +77,8 @@ public class CLICompleter implements Completer {
      */
     private final Map<String, List<String>> commandOptionsMap;
 
+    private final Completer fileNameCompleter = new Completers.FileNameCompleter();
+
     /**
      * Initializes the completer based on the top-level commands and command groups.
      *
@@ -185,7 +187,6 @@ public class CLICompleter implements Completer {
                     final String currWord = line.word();
                     final String prevWord = line.words().get(line.wordIndex() - 1);
                     if (FILE_COMPLETION_VARS.contains(prevWord)) {
-                        final Completers.FileNameCompleter fileNameCompleter = new Completers.FileNameCompleter();
                         fileNameCompleter.complete(reader, new ArgumentCompleter.ArgumentLine(currWord, currWord.length()), candidates);
                     }
                 }
@@ -196,7 +197,6 @@ public class CLICompleter implements Completer {
 
                 // determine if the word before the current is an arg that needs file completion, otherwise return all args
                 if (FILE_COMPLETION_ARGS.contains(prevWord)) {
-                    final Completers.FileNameCompleter fileNameCompleter = new Completers.FileNameCompleter();
                     fileNameCompleter.complete(reader, new ArgumentCompleter.ArgumentLine(currWord, currWord.length()), candidates);
                 } else {
                     final List<String> options = commandOptionsMap.get(secondLevel);

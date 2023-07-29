@@ -158,6 +158,7 @@ public abstract class AbstractHadoopProcessor extends AbstractProcessor implemen
 
 
     public static final String ABSOLUTE_HDFS_PATH_ATTRIBUTE = "absolute.hdfs.path";
+    public static final String HADOOP_FILE_URL_ATTRIBUTE = "hadoop.file.url";
 
     protected static final String TARGET_HDFS_DIR_CREATED_ATTRIBUTE = "target.dir.created";
 
@@ -210,18 +211,22 @@ public abstract class AbstractHadoopProcessor extends AbstractProcessor implemen
             return explicitKerberosPrincipal;
         }
 
-        final KerberosCredentialsService credentialsService = context.getProperty(KERBEROS_CREDENTIALS_SERVICE).asControllerService(KerberosCredentialsService.class);
-        if (credentialsService != null) {
-            final String credentialsServicePrincipal = credentialsService.getPrincipal();
-            if (credentialsServicePrincipal != null) {
-                return credentialsServicePrincipal;
+        try {
+            final KerberosCredentialsService credentialsService = context.getProperty(KERBEROS_CREDENTIALS_SERVICE).asControllerService(KerberosCredentialsService.class);
+            if (credentialsService != null) {
+                final String credentialsServicePrincipal = credentialsService.getPrincipal();
+                if (credentialsServicePrincipal != null) {
+                    return credentialsServicePrincipal;
+                }
             }
-        }
 
-        final KerberosUserService kerberosUserService = context.getProperty(KERBEROS_USER_SERVICE).asControllerService(KerberosUserService.class);
-        if (kerberosUserService != null) {
-            final KerberosUser kerberosUser = kerberosUserService.createKerberosUser();
-            return kerberosUser.getPrincipal();
+            final KerberosUserService kerberosUserService = context.getProperty(KERBEROS_USER_SERVICE).asControllerService(KerberosUserService.class);
+            if (kerberosUserService != null) {
+                final KerberosUser kerberosUser = kerberosUserService.createKerberosUser();
+                return kerberosUser.getPrincipal();
+            }
+        } catch (IllegalStateException e) {
+            return null;
         }
 
         return null;

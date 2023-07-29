@@ -18,7 +18,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-nar-bundles</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
     <packaging>pom</packaging>
     <artifactId>nifi-extension-utils</artifactId>
@@ -30,6 +30,7 @@
         <module>nifi-bin-manager</module>
         <module>nifi-database-utils</module>
         <module>nifi-database-test-utils</module>
+        <module>nifi-dbcp-base</module>
         <module>nifi-event-listen</module>
         <module>nifi-event-put</module>
         <module>nifi-event-transport</module>
@@ -40,7 +41,9 @@
         <module>nifi-put-pattern</module>
         <module>nifi-record-utils</module>
         <module>nifi-reporting-utils</module>
+        <module>nifi-resource-transfer</module>
         <module>nifi-service-utils</module>
         <module>nifi-syslog-utils</module>
+        <module>nifi-conflict-resolution</module>
     </modules>
 </project>

@@ -18,12 +18,13 @@ package org.apache.nifi.processors.standard;
 
 import org.apache.nifi.event.transport.EventSender;
 import org.apache.nifi.event.transport.configuration.LineEnding;
+import org.apache.nifi.event.transport.configuration.ShutdownQuietPeriod;
+import org.apache.nifi.event.transport.configuration.ShutdownTimeout;
 import org.apache.nifi.event.transport.configuration.TransportProtocol;
 import org.apache.nifi.event.transport.netty.StringNettyEventSenderFactory;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.provenance.ProvenanceEventRecord;
 import org.apache.nifi.provenance.ProvenanceEventType;
-import org.apache.nifi.remote.io.socket.NetworkUtils;
 import org.apache.nifi.syslog.attributes.SyslogAttributes;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
@@ -74,31 +75,55 @@ public class TestListenSyslog {
 
     @Test
     public void testRunTcp() throws Exception {
-        final int port = NetworkUtils.getAvailableTcpPort();
         final TransportProtocol protocol = TransportProtocol.TCP;
         runner.setProperty(ListenSyslog.PROTOCOL, protocol.toString());
-        runner.setProperty(ListenSyslog.PORT, Integer.toString(port));
+        runner.setProperty(ListenSyslog.PORT, "0");
         runner.setProperty(ListenSyslog.SOCKET_KEEP_ALIVE, Boolean.FALSE.toString());
 
-        assertSendSuccess(protocol, port);
+        assertSendSuccess(protocol);
+    }
+
+    @Test
+    public void testRunTcpBatchParseDisabled() throws Exception {
+        final TransportProtocol protocol = TransportProtocol.TCP;
+        runner.setProperty(ListenSyslog.PROTOCOL, protocol.toString());
+        runner.setProperty(ListenSyslog.PORT, "0");
+        runner.setProperty(ListenSyslog.SOCKET_KEEP_ALIVE, Boolean.FALSE.toString());
+        runner.setProperty(ListenSyslog.PARSE_MESSAGES, Boolean.FALSE.toString());
+        runner.setProperty(ListenSyslog.MAX_BATCH_SIZE, "2");
+
+        runner.run(1, STOP_ON_FINISH_DISABLED);
+        final int port = ((ListenSyslog) runner.getProcessor()).getListeningPort();
+
+        final String batchedWithEmptyMessages = String.format("%s\n\n%s\n", VALID_MESSAGE, VALID_MESSAGE);
+        sendMessages(protocol, port, LineEnding.NONE, batchedWithEmptyMessages);
+        runner.run(1, STOP_ON_FINISH_DISABLED, INITIALIZE_DISABLED);
+
+        runner.assertTransferCount(ListenSyslog.REL_INVALID, 0);
+
+        final List<MockFlowFile> successFlowFiles = runner.getFlowFilesForRelationship(ListenSyslog.REL_SUCCESS);
+        assertEquals(1, successFlowFiles.size(), "Success FlowFiles not matched");
+
+        final MockFlowFile flowFile = successFlowFiles.iterator().next();
+
+        final String batchedMessages = String.format("%s\n%s", VALID_MESSAGE, VALID_MESSAGE);
+        flowFile.assertContentEquals(batchedMessages);
     }
 
     @Test
     public void testRunUdp() throws Exception {
-        final int port = NetworkUtils.getAvailableUdpPort();
         final TransportProtocol protocol = TransportProtocol.UDP;
         runner.setProperty(ListenSyslog.PROTOCOL, protocol.toString());
-        runner.setProperty(ListenSyslog.PORT, Integer.toString(port));
+        runner.setProperty(ListenSyslog.PORT, "0");
 
-        assertSendSuccess(protocol, port);
+        assertSendSuccess(protocol);
     }
 
     @Test
     public void testRunUdpBatch() throws Exception {
-        final int port = NetworkUtils.getAvailableUdpPort();
         final TransportProtocol protocol = TransportProtocol.UDP;
         runner.setProperty(ListenSyslog.PROTOCOL, protocol.toString());
-        runner.setProperty(ListenSyslog.PORT, Integer.toString(port));
+        runner.setProperty(ListenSyslog.PORT, "0");
 
         final String[] messages = new String[]{VALID_MESSAGE, VALID_MESSAGE};
 
@@ -106,7 +131,9 @@ public class TestListenSyslog {
         runner.setProperty(ListenSyslog.PARSE_MESSAGES, Boolean.FALSE.toString());
 
         runner.run(1, STOP_ON_FINISH_DISABLED);
-        sendMessages(protocol, port, LineEnding.NONE, messages);
+        final int listeningPort = ((ListenSyslog) runner.getProcessor()).getListeningPort();
+
+        sendMessages(protocol, listeningPort, LineEnding.NONE, messages);
         runner.run(1, STOP_ON_FINISH_ENABLED, INITIALIZE_DISABLED);
 
         final List<MockFlowFile> successFlowFiles = runner.getFlowFilesForRelationship(ListenSyslog.REL_SUCCESS);
@@ -120,13 +147,14 @@ public class TestListenSyslog {
 
     @Test
     public void testRunUdpInvalid() throws Exception {
-        final int port = NetworkUtils.getAvailableUdpPort();
         final TransportProtocol protocol = TransportProtocol.UDP;
         runner.setProperty(ListenSyslog.PROTOCOL, protocol.toString());
-        runner.setProperty(ListenSyslog.PORT, Integer.toString(port));
+        runner.setProperty(ListenSyslog.PORT, "0");
 
         runner.run(1, STOP_ON_FINISH_DISABLED);
-        sendMessages(protocol, port, LineEnding.NONE, TIMESTAMP);
+        final int listeningPort = ((ListenSyslog) runner.getProcessor()).getListeningPort();
+
+        sendMessages(protocol, listeningPort, LineEnding.NONE, TIMESTAMP);
         runner.run(1, STOP_ON_FINISH_ENABLED, INITIALIZE_DISABLED);
 
         final List<MockFlowFile> invalidFlowFiles = runner.getFlowFilesForRelationship(ListenSyslog.REL_INVALID);
@@ -135,14 +163,16 @@ public class TestListenSyslog {
         final MockFlowFile flowFile = invalidFlowFiles.iterator().next();
         flowFile.assertAttributeEquals(SyslogAttributes.SYSLOG_SENDER.key(), LOCALHOST_ADDRESS);
         flowFile.assertAttributeEquals(SyslogAttributes.SYSLOG_PROTOCOL.key(), protocol.toString());
-        flowFile.assertAttributeEquals(SyslogAttributes.SYSLOG_PORT.key(), Integer.toString(port));
+        flowFile.assertAttributeEquals(SyslogAttributes.SYSLOG_PORT.key(), Integer.toString(listeningPort));
 
         final String content = flowFile.getContent();
         assertEquals(TIMESTAMP, content, "FlowFile content not matched");
     }
 
-    private void assertSendSuccess(final TransportProtocol protocol, final int port) throws Exception {
+    private void assertSendSuccess(final TransportProtocol protocol) throws Exception {
         runner.run(1, STOP_ON_FINISH_DISABLED);
+
+        final int port = ((ListenSyslog) runner.getProcessor()).getListeningPort();
 
         sendMessages(protocol, port, LineEnding.UNIX, VALID_MESSAGE);
         runner.run(1, STOP_ON_FINISH_ENABLED, INITIALIZE_DISABLED);
@@ -181,6 +211,8 @@ public class TestListenSyslog {
 
     private void sendMessages(final TransportProtocol protocol, final int port, final LineEnding lineEnding, final String... messages) throws Exception {
         final StringNettyEventSenderFactory eventSenderFactory = new StringNettyEventSenderFactory(runner.getLogger(), LOCALHOST_ADDRESS, port, protocol, CHARSET, lineEnding);
+        eventSenderFactory.setShutdownQuietPeriod(ShutdownQuietPeriod.QUICK.getDuration());
+        eventSenderFactory.setShutdownTimeout(ShutdownTimeout.QUICK.getDuration());
         eventSenderFactory.setTimeout(SENDER_TIMEOUT);
         try (final EventSender<String> eventSender = eventSenderFactory.getEventSender()) {
             for (final String message : messages) {

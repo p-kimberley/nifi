@@ -33,7 +33,6 @@ import org.apache.nifi.annotation.lifecycle.OnUnscheduled;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
-import org.apache.nifi.components.Validator;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
@@ -44,7 +43,6 @@ import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.processors.mqtt.common.AbstractMQTTProcessor;
-import org.apache.nifi.processors.mqtt.common.MqttCallback;
 import org.apache.nifi.processors.mqtt.common.MqttException;
 import org.apache.nifi.processors.mqtt.common.ReceivedMqttMessage;
 import org.apache.nifi.serialization.MalformedRecordException;
@@ -105,8 +103,7 @@ import static org.apache.nifi.processors.mqtt.common.MqttConstants.ALLOWABLE_VAL
             "on the topic.")})
 @SystemResourceConsideration(resource = SystemResource.MEMORY, description = "The 'Max Queue Size' specifies the maximum number of messages that can be hold in memory by NiFi by a single "
         + "instance of this processor. A high value for this property could represent a lot of data being stored in memory.")
-
-public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
+public class ConsumeMQTT extends AbstractMQTTProcessor {
 
     public final static String RECORD_COUNT_KEY = "record.count";
     public final static String BROKER_ATTRIBUTE_KEY = "mqtt.broker";
@@ -172,6 +169,15 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
             .description("The Record Writer to use for serializing Records before writing them to a FlowFile.")
             .build();
 
+    public static final PropertyDescriptor MESSAGE_DEMARCATOR = new PropertyDescriptor.Builder()
+            .fromPropertyDescriptor(BASE_MESSAGE_DEMARCATOR)
+            .description("With this property, you have an option to output FlowFiles which contains multiple messages. "
+                    + "This property allows you to provide a string (interpreted as UTF-8) to use for demarcating apart "
+                    + "multiple messages. This is an optional property ; if not provided, and if not defining a "
+                    + "Record Reader/Writer, each message received will result in a single FlowFile. To enter special "
+                    + "character such as 'new line' use CTRL+Enter or Shift+Enter depending on the OS.")
+            .build();
+
     public static final PropertyDescriptor ADD_ATTRIBUTES_AS_FIELDS = new PropertyDescriptor.Builder()
             .name("add-attributes-as-fields")
             .displayName("Add attributes as fields")
@@ -182,19 +188,6 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
             .allowableValues("true", "false")
             .addValidator(StandardValidators.BOOLEAN_VALIDATOR)
             .dependsOn(RECORD_READER)
-            .build();
-
-    public static final PropertyDescriptor MESSAGE_DEMARCATOR = new PropertyDescriptor.Builder()
-            .name("message-demarcator")
-            .displayName("Message Demarcator")
-            .required(false)
-            .addValidator(Validator.VALID)
-            .expressionLanguageSupported(ExpressionLanguageScope.VARIABLE_REGISTRY)
-            .description("With this property, you have an option to output FlowFiles which contains multiple messages. "
-                    + "This property allows you to provide a string (interpreted as UTF-8) to use for demarcating apart "
-                    + "multiple messages. This is an optional property ; if not provided, and if not defining a "
-                    + "Reader/Writer, each message received will result in a single FlowFile which. To enter special "
-                    + "character such as 'new line' use CTRL+Enter or Shift+Enter depending on the OS.")
             .build();
 
     private volatile int qos;
@@ -296,13 +289,6 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
                     .build());
         }
 
-        final boolean readerIsSet = context.getProperty(RECORD_READER).isSet();
-        final boolean demarcatorIsSet = context.getProperty(MESSAGE_DEMARCATOR).isSet();
-        if (readerIsSet && demarcatorIsSet) {
-            results.add(new ValidationResult.Builder().subject("Reader and Writer").valid(false)
-                    .explanation("message Demarcator and Record Reader/Writer cannot be used at the same time.").build());
-        }
-
         return results;
     }
 
@@ -344,7 +330,6 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
             stopClient();
         }
     }
-
 
     @OnStopped
     public void onStopped(final ProcessContext context) {
@@ -397,9 +382,8 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
         // non-null but not connected, so we need to handle each case and only create a new client when it is null
         try {
             mqttClient = createMqttClient();
-            mqttClient.setCallback(this);
             mqttClient.connect();
-            mqttClient.subscribe(topicPrefix + topicFilter, qos);
+            mqttClient.subscribe(topicPrefix + topicFilter, qos, this::handleReceivedMessage);
         } catch (Exception e) {
             logger.error("Connection failed to {}. Yielding processor", clientProperties.getRawBrokerUris(), e);
             mqttClient = null; // prevent stucked processor when subscribe fails
@@ -431,8 +415,10 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
             int i = 0;
             while (!mqttQueue.isEmpty() && i < MAX_MESSAGES_PER_FLOW_FILE) {
                 final ReceivedMqttMessage mqttMessage = mqttQueue.poll();
+                if (i > 0) {
+                    out.write(demarcator);
+                }
                 out.write(mqttMessage.getPayload() == null ? new byte[0] : mqttMessage.getPayload());
-                out.write(demarcator);
                 session.adjustCounter(COUNTER_RECORDS_RECEIVED, 1L, false);
                 i++;
             }
@@ -626,13 +612,7 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
         return stringBuilder.toString();
     }
 
-    @Override
-    public void connectionLost(Throwable cause) {
-        logger.error("Connection to {} lost", clientProperties.getRawBrokerUris(), cause);
-    }
-
-    @Override
-    public void messageArrived(ReceivedMqttMessage message) {
+    private void handleReceivedMessage(ReceivedMqttMessage message) {
         if (logger.isDebugEnabled()) {
             byte[] payload = message.getPayload();
             final String text = new String(payload, StandardCharsets.UTF_8);
@@ -650,12 +630,5 @@ public class ConsumeMQTT extends AbstractMQTTProcessor implements MqttCallback {
         } catch (InterruptedException e) {
             throw new MqttException("Failed to process message arrived from topic " + message.getTopic());
         }
-    }
-
-    @Override
-    public void deliveryComplete(String token) {
-        // Unlikely situation. Api uses the same callback for publisher and consumer as well.
-        // That's why we have this log message here to indicate something really messy thing happened.
-        logger.error("Received MQTT 'delivery complete' message to subscriber. Token: [{}]", token);
     }
 }

@@ -16,11 +16,10 @@
 # under the License.
 #
 
-FROM apacheminifi:${minifi.version}
+FROM apache/nifi-minifi:${minifi.version}-maven
 
 USER root
 
-RUN apk update \
-    && apk add python
+RUN apt-get update && apt-get install -y python3
 
 USER minifi

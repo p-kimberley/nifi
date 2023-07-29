@@ -21,6 +21,7 @@ import com.amazonaws.services.s3.model.AmazonS3Exception;
 import com.amazonaws.services.s3.model.DeleteObjectRequest;
 import com.amazonaws.services.s3.model.DeleteVersionRequest;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.proxy.ProxyConfigurationService;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
@@ -47,7 +48,8 @@ public class TestDeleteS3Object {
     public void setUp() {
         mockS3Client = Mockito.mock(AmazonS3Client.class);
         mockDeleteS3Object = new DeleteS3Object() {
-            protected AmazonS3Client getClient() {
+            @Override
+            protected AmazonS3Client getS3Client(final ProcessContext context, final Map<String, String> attributes) {
                 return mockS3Client;
             }
         };
@@ -56,7 +58,7 @@ public class TestDeleteS3Object {
 
     @Test
     public void testDeleteObjectSimple() {
-        runner.setProperty(DeleteS3Object.REGION, "us-west-2");
+        runner.setProperty(DeleteS3Object.S3_REGION, "us-west-2");
         runner.setProperty(DeleteS3Object.BUCKET, "test-bucket");
         final Map<String, String> attrs = new HashMap<>();
         attrs.put("filename", "delete-key");
@@ -74,8 +76,22 @@ public class TestDeleteS3Object {
     }
 
     @Test
+    public void testDeleteObjectSimpleRegionFromFlowFileAttribute() {
+        runner.setProperty(DeleteS3Object.S3_REGION, "attribute-defined-region");
+        runner.setProperty(DeleteS3Object.BUCKET, "test-bucket");
+        final Map<String, String> attrs = new HashMap<>();
+        attrs.put("filename", "delete-key");
+        attrs.put("s3.region", "us-east-1");
+        runner.enqueue(new byte[0], attrs);
+
+        runner.run(1);
+
+        runner.assertAllFlowFilesTransferred(DeleteS3Object.REL_SUCCESS, 1);
+    }
+
+    @Test
     public void testDeleteObjectS3Exception() {
-        runner.setProperty(DeleteS3Object.REGION, "us-west-2");
+        runner.setProperty(DeleteS3Object.S3_REGION, "us-west-2");
         runner.setProperty(DeleteS3Object.BUCKET, "test-bucket");
         final Map<String, String> attrs = new HashMap<>();
         attrs.put("filename", "delete-key");
@@ -91,7 +107,7 @@ public class TestDeleteS3Object {
 
     @Test
     public void testDeleteVersionSimple() {
-        runner.setProperty(DeleteS3Object.REGION, "us-west-2");
+        runner.setProperty(DeleteS3Object.S3_REGION, "us-west-2");
         runner.setProperty(DeleteS3Object.BUCKET, "test-bucket");
         runner.setProperty(DeleteS3Object.VERSION_ID, "test-version");
         final Map<String, String> attrs = new HashMap<>();
@@ -112,7 +128,7 @@ public class TestDeleteS3Object {
 
     @Test
     public void testDeleteVersionFromExpressions() {
-        runner.setProperty(DeleteS3Object.REGION, "us-west-2");
+        runner.setProperty(DeleteS3Object.S3_REGION, "us-west-2");
         runner.setProperty(DeleteS3Object.BUCKET, "${s3.bucket}");
         runner.setProperty(DeleteS3Object.VERSION_ID, "${s3.version}");
         final Map<String, String> attrs = new HashMap<>();
@@ -137,7 +153,7 @@ public class TestDeleteS3Object {
     public void testGetPropertyDescriptors() {
         DeleteS3Object processor = new DeleteS3Object();
         List<PropertyDescriptor> pd = processor.getSupportedPropertyDescriptors();
-        assertEquals(23, pd.size(), "size should be eq");
+        assertEquals(25, pd.size(), "size should be eq");
         assertTrue(pd.contains(processor.ACCESS_KEY));
         assertTrue(pd.contains(processor.AWS_CREDENTIALS_PROVIDER_SERVICE));
         assertTrue(pd.contains(processor.BUCKET));
@@ -148,9 +164,11 @@ public class TestDeleteS3Object {
         assertTrue(pd.contains(processor.OWNER));
         assertTrue(pd.contains(processor.READ_ACL_LIST));
         assertTrue(pd.contains(processor.READ_USER_LIST));
-        assertTrue(pd.contains(processor.REGION));
+        assertTrue(pd.contains(processor.S3_REGION));
         assertTrue(pd.contains(processor.SECRET_KEY));
         assertTrue(pd.contains(processor.SIGNER_OVERRIDE));
+        assertTrue(pd.contains(processor.S3_CUSTOM_SIGNER_CLASS_NAME));
+        assertTrue(pd.contains(processor.S3_CUSTOM_SIGNER_MODULE_LOCATION));
         assertTrue(pd.contains(processor.SSL_CONTEXT_SERVICE));
         assertTrue(pd.contains(processor.TIMEOUT));
         assertTrue(pd.contains(processor.VERSION_ID));

@@ -37,6 +37,7 @@ import org.apache.nifi.controller.ProcessorNode;
 import org.apache.nifi.controller.ReportingTaskNode;
 import org.apache.nifi.controller.queue.FlowFileQueue;
 import org.apache.nifi.controller.queue.QueueSize;
+import org.apache.nifi.controller.repository.ContentRepository;
 import org.apache.nifi.controller.repository.CounterRepository;
 import org.apache.nifi.controller.repository.FlowFileRecord;
 import org.apache.nifi.controller.repository.RepositoryContext;
@@ -74,6 +75,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.NumberFormat;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -96,7 +98,6 @@ import java.util.stream.Collectors;
 
 public class StandardStatelessFlow implements StatelessDataflow {
     private static final Logger logger = LoggerFactory.getLogger(StandardStatelessFlow.class);
-    private static final long COMPONENT_ENABLE_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(10);
     private static final long TEN_MILLIS_IN_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
     private static final String PARENT_FLOW_GROUP_ID = "stateless-flow";
 
@@ -116,6 +117,7 @@ public class StandardStatelessFlow implements StatelessDataflow {
     private final TransactionThresholdMeter transactionThresholdMeter;
     private final List<BackgroundTask> backgroundTasks = new ArrayList<>();
     private final BulletinRepository bulletinRepository;
+    private final long componentEnableTimeoutMillis;
 
     private volatile ExecutorService runDataflowExecutor;
     private volatile ScheduledExecutorService backgroundTaskExecutor;
@@ -124,7 +126,8 @@ public class StandardStatelessFlow implements StatelessDataflow {
 
     public StandardStatelessFlow(final ProcessGroup rootGroup, final List<ReportingTaskNode> reportingTasks, final ControllerServiceProvider controllerServiceProvider,
                                  final ProcessContextFactory processContextFactory, final RepositoryContextFactory repositoryContextFactory, final DataflowDefinition dataflowDefinition,
-                                 final StatelessStateManagerProvider stateManagerProvider, final ProcessScheduler processScheduler, final BulletinRepository bulletinRepository) {
+                                 final StatelessStateManagerProvider stateManagerProvider, final ProcessScheduler processScheduler, final BulletinRepository bulletinRepository,
+                                 final Duration componentEnableTimeout) {
         this.rootGroup = rootGroup;
         this.allConnections = rootGroup.findAllConnections();
         this.reportingTasks = reportingTasks;
@@ -136,6 +139,7 @@ public class StandardStatelessFlow implements StatelessDataflow {
         this.processScheduler = processScheduler;
         this.transactionThresholdMeter = new TransactionThresholdMeter(dataflowDefinition.getTransactionThresholds());
         this.bulletinRepository = bulletinRepository;
+        this.componentEnableTimeoutMillis = componentEnableTimeout.toMillis();
 
         rootConnectables = new HashSet<>();
 
@@ -285,7 +289,7 @@ public class StandardStatelessFlow implements StatelessDataflow {
 
     private void waitForServicesEnabled(final ProcessGroup group) {
         final long startTime = System.currentTimeMillis();
-        final long cutoff = startTime + COMPONENT_ENABLE_TIMEOUT_MILLIS;
+        final long cutoff = startTime + this.componentEnableTimeoutMillis;
 
         final Set<ControllerServiceNode> serviceNodes = group.findAllControllerServices();
         for (final ControllerServiceNode serviceNode : serviceNodes) {
@@ -385,7 +389,7 @@ public class StandardStatelessFlow implements StatelessDataflow {
             final Future<?> future = controllerServiceProvider.enableControllerServiceAndDependencies(serviceNode);
 
             try {
-                future.get(COMPONENT_ENABLE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+                future.get(this.componentEnableTimeoutMillis, TimeUnit.MILLISECONDS);
             } catch (final Exception e) {
                 throw new IllegalStateException("Controller Service " + serviceNode + " has not fully enabled. Current Validation Status is "
                     + serviceNode.getValidationStatus() + " with validation Errors: " + serviceNode.getValidationErrors(), e);
@@ -410,7 +414,7 @@ public class StandardStatelessFlow implements StatelessDataflow {
 
             final long start = System.currentTimeMillis();
             try {
-                future.get(COMPONENT_ENABLE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+                future.get(this.componentEnableTimeoutMillis, TimeUnit.MILLISECONDS);
             } catch (final Exception e) {
                 final String validationErrors = performValidation().toString();
                 throw new IllegalStateException("Processor " + processor + " has not fully enabled. Current Validation Status is "
@@ -820,5 +824,9 @@ public class StandardStatelessFlow implements StatelessDataflow {
         public TimeUnit getSchedulingUnit() {
             return schedulingUnit;
         }
+    }
+
+    public ContentRepository getContentRepository() {
+        return repositoryContextFactory.getContentRepository();
     }
 }

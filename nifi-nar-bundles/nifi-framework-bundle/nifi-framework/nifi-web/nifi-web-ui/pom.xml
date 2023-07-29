@@ -18,7 +18,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-web</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
     <artifactId>nifi-web-ui</artifactId>
     <packaging>war</packaging>
@@ -148,7 +148,7 @@
                                     <filtering>false</filtering>
                                     <includes>
                                         <!-- D3 -->
-                                        <include>d3/build/d3.min.js*</include>
+                                        <include>d3/dist/d3.min.js*</include>
                                         <include>d3/LICENSE</include>
                                         <!-- D3 selection multi -->
                                         <include>d3-selection-multi/build/d3-selection-multi.min.js*</include>
@@ -418,7 +418,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-clean-plugin</artifactId>
-                        <version>3.0.0</version>
+                        <version>3.2.0</version>
                         <configuration>
                             <excludeDefaultDirectories>true</excludeDefaultDirectories>
                             <filesets>
@@ -477,7 +477,7 @@
                                     <nomunge>false</nomunge>
                                     <jswarn>false</jswarn>
                                     <nosuffix>true</nosuffix>
-                                    <gzip>true</gzip>
+                                    <gzip>false</gzip>
                                     <aggregations>
                                         <aggregation>
                                             <insertNewLine>true</insertNewLine>
@@ -496,6 +496,7 @@
                                                 <include>${staging.dir}/js/nf/canvas/nf-component-state.js</include>
                                                 <include>${staging.dir}/js/nf/nf-shell.js</include>
                                                 <include>${staging.dir}/js/nf/nf-client.js</include>
+                                                <include>${staging.dir}/js/nf/canvas/helpers/d3-helpers.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-clipboard.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-custom-ui.js</include>
                                                 <include>${staging.dir}/js/nf/canvas/nf-canvas-utils.js</include>
@@ -885,7 +886,7 @@
                         </executions>
                     </plugin>
                     <!--
-                        Configuration to ensure that we only bundle the gzip compressed
+                        Configuration to ensure that we only bundle the aggregated
                         version of static content.
                     -->
                     <plugin>
@@ -896,81 +897,45 @@
                             <packagingIncludes>
                                 assets/**/*,
                                 css/common-ui.css,
-                                css/common-ui.css.gz,
                                 css/slick-nifi-theme.css,
-                                css/slick-nifi-theme.css.gz,
                                 css/message-page.css,
-                                css/message-page.css.gz,
                                 css/message-pane.css,
-                                css/message-pane.css.gz,
                                 css/nf-common-ui.css,
-                                css/nf-common-ui.css.gz,
                                 css/nf-canvas-all.css,
-                                css/nf-canvas-all.css.gz,
                                 css/nf-history-all.css,
-                                css/nf-history-all.css.gz,
                                 css/nf-provenance-all.css,
-                                css/nf-provenance-all.css.gz,
                                 css/nf-summary-all.css,
-                                css/nf-summary-all.css.gz,
                                 css/nf-counters-all.css,
-                                css/nf-counters-all.css.gz,
                                 css/nf-cluster-all.css,
-                                css/nf-cluster-all.css.gz,
                                 css/nf-users-all.css,
-                                css/nf-users-all.css.gz,
                                 css/nf-templates-all.css,
-                                css/nf-templates-all.css.gz,
                                 css/nf-bulletin-board-all.css,
-                                css/nf-bulletin-board-all.css.gz,
                                 css/nf-login-all.css,
-                                css/nf-login-all.css.gz,
                                 css/nf-logout-all.css,
-                                css/nf-logout-all.css.gz,
                                 js/*,
                                 js/d3/**/*,
                                 js/codemirror/**/*,
                                 js/jquery/**/*,
                                 js/nf/nf-namespace.js,
-                                js/nf/nf-namespace.js.gz,
                                 js/nf/nf-ng-namespace.js,
-                                js/nf/nf-ng-namespace.js.gz,
                                 js/nf/canvas/nf-ng-canvas-namespace.js,
-                                js/nf/canvas/nf-ng-canvas-namespace.js.gz,
                                 js/nf/nf-universal-capture.js,
-                                js/nf/nf-universal-capture.js.gz,
                                 js/nf/nf-authorization-storage.js,
-                                js/nf/nf-authorization-storage.js.gz,
                                 js/nf/nf-storage.js,
-                                js/nf/nf-storage.js.gz,
                                 js/nf/nf-ajax-setup.js,
-                                js/nf/nf-ajax-setup.js.gz,
                                 js/nf/nf-status-history.js,
-                                js/nf/nf-status-history.js.gz,
                                 js/nf/canvas/nf-canvas-all.js,
-                                js/nf/canvas/nf-canvas-all.js.gz,
                                 js/nf/history/nf-history-all.js,
-                                js/nf/history/nf-history-all.js.gz,
                                 js/nf/provenance/nf-provenance-all.js,
-                                js/nf/provenance/nf-provenance-all.js.gz,
                                 js/nf/provenance/nf-provenance-lineage.js,
-                                js/nf/provenance/nf-provenance-lineage.js.gz,
                                 js/nf/summary/nf-summary-all.js,
-                                js/nf/summary/nf-summary-all.js.gz,
                                 js/nf/counters/nf-counters-all.js,
-                                js/nf/counters/nf-counters-all.js.gz,
                                 js/nf/cluster/nf-cluster-all.js,
-                                js/nf/cluster/nf-cluster-all.js.gz,
                                 js/nf/users/nf-users-all.js,
-                                js/nf/users/nf-users-all.js.gz,
                                 js/nf/templates/nf-templates-all.js,
-                                js/nf/templates/nf-templates-all.js.gz,
                                 js/nf/bulletin-board/nf-bulletin-board-all.js,
-                                js/nf/bulletin-board/nf-bulletin-board-all.js.gz,
                                 js/nf/login/nf-login-all.js,
-                                js/nf/login/nf-login-all.js.gz,
                                 js/nf/logout/nf-logout-all.js,
-                                js/nf/logout/nf-logout-all.js.gz,
                                 views/*,
                                 fonts/**/*,
                                 images/*,

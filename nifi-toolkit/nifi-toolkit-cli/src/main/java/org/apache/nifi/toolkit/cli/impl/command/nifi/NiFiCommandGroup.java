@@ -29,11 +29,13 @@ import org.apache.nifi.toolkit.cli.impl.command.nifi.cs.GetControllerServices;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.ClusterSummary;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.CreateReportingTask;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.CurrentUser;
+import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.GetControllerConfiguration;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.GetReportingTask;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.GetReportingTasks;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.GetRootId;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.StartReportingTasks;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.StopReportingTasks;
+import org.apache.nifi.toolkit.cli.impl.command.nifi.flow.UpdateControllerConfiguration;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.nodes.ConnectNode;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.nodes.DeleteNode;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.nodes.DisconnectNode;
@@ -75,6 +77,7 @@ import org.apache.nifi.toolkit.cli.impl.command.nifi.pg.PGSetVar;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.pg.PGStart;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.pg.PGStatus;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.pg.PGStop;
+import org.apache.nifi.toolkit.cli.impl.command.nifi.pg.PGStopVersionControl;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.policies.GetAccessPolicy;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.policies.UpdateAccessPolicy;
 import org.apache.nifi.toolkit.cli.impl.command.nifi.registry.CreateRegistryClient;
@@ -128,6 +131,7 @@ public class NiFiCommandGroup extends AbstractCommandGroup {
         commands.add(new PGGetVars());
         commands.add(new PGSetVar());
         commands.add(new PGGetVersion());
+        commands.add(new PGStopVersionControl());
         commands.add(new PGChangeVersion());
         commands.add(new PGGetAllVersions());
         commands.add(new PGList());
@@ -180,6 +184,8 @@ public class NiFiCommandGroup extends AbstractCommandGroup {
         commands.add(new GetAccessToken());
         commands.add(new GetAccessTokenSpnego());
         commands.add(new LogoutAccessToken());
+        commands.add(new GetControllerConfiguration());
+        commands.add(new UpdateControllerConfiguration());
         return new ArrayList<>(commands);
     }
 }

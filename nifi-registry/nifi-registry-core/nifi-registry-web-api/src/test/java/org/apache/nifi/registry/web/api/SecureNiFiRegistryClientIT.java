@@ -16,6 +16,7 @@
  */
 package org.apache.nifi.registry.web.api;
 
+import org.apache.nifi.flow.VersionedProcessGroup;
 import org.apache.nifi.registry.NiFiRegistryTestApiApplication;
 import org.apache.nifi.registry.authorization.CurrentUser;
 import org.apache.nifi.registry.authorization.Permissions;
@@ -36,31 +37,29 @@ import org.apache.nifi.registry.client.impl.request.ProxiedEntityRequestConfig;
 import org.apache.nifi.registry.flow.VersionedFlow;
 import org.apache.nifi.registry.flow.VersionedFlowSnapshot;
 import org.apache.nifi.registry.flow.VersionedFlowSnapshotMetadata;
-import org.apache.nifi.flow.VersionedProcessGroup;
 import org.apache.nifi.registry.revision.entity.RevisionInfo;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.jdbc.Sql;
-import org.springframework.test.context.junit4.SpringRunner;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
 
 import javax.ws.rs.ForbiddenException;
 import java.io.IOException;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
-@RunWith(SpringRunner.class)
+@ExtendWith(SpringExtension.class)
 @SpringBootTest(
         classes = NiFiRegistryTestApiApplication.class,
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -74,24 +73,26 @@ public class SecureNiFiRegistryClientIT extends IntegrationTestBase {
     static final String INITIAL_ADMIN_IDENTITY = "CN=user1, OU=nifi";
     static final String NO_ACCESS_IDENTITY = "CN=no-access, OU=nifi";
 
+    static final String SECOND_IDENTITY = "CN=keep_author, OU=nifi";
+
     private NiFiRegistryClient client;
 
-    @Before
+    @BeforeEach
     public void setup() {
         final String baseUrl = createBaseURL();
         LOGGER.info("Using base url = " + baseUrl);
 
         final NiFiRegistryClientConfig clientConfig = createClientConfig(baseUrl);
-        Assert.assertNotNull(clientConfig);
+        assertNotNull(clientConfig);
 
         final NiFiRegistryClient client = new JerseyNiFiRegistryClient.Builder()
                 .config(clientConfig)
                 .build();
-        Assert.assertNotNull(client);
+        assertNotNull(client);
         this.client = client;
     }
 
-    @After
+    @AfterEach
     public void teardown() {
         try {
             client.close();
@@ -129,7 +130,7 @@ public class SecureNiFiRegistryClientIT extends IntegrationTestBase {
         assertNotNull(createdBucket.getRevision());
 
         final List<Bucket> buckets = bucketClient.getAll();
-        Assert.assertEquals(4, buckets.size());
+        assertEquals(4, buckets.size());
         buckets.forEach(b -> assertNotNull(b.getRevision()));
 
         final VersionedFlow flow = new VersionedFlow();
@@ -161,6 +162,21 @@ public class SecureNiFiRegistryClientIT extends IntegrationTestBase {
         final VersionedFlowSnapshot createdSnapshot = snapshotClient.create(snapshot);
         assertNotNull(createdSnapshot);
         assertEquals(INITIAL_ADMIN_IDENTITY, createdSnapshot.getSnapshotMetadata().getAuthor());
+
+        final VersionedFlowSnapshotMetadata snapshotMetadata2 = new VersionedFlowSnapshotMetadata();
+        snapshotMetadata2.setBucketIdentifier(createdFlow.getBucketIdentifier());
+        snapshotMetadata2.setFlowIdentifier(createdFlow.getIdentifier());
+        snapshotMetadata2.setVersion(2);
+        snapshotMetadata2.setComments("This is snapshot #2");
+        snapshotMetadata2.setAuthor(SECOND_IDENTITY);
+
+        final VersionedFlowSnapshot snapshot2 = new VersionedFlowSnapshot();
+        snapshot2.setSnapshotMetadata(snapshotMetadata2);
+        snapshot2.setFlowContents(rootProcessGroup);
+
+        final VersionedFlowSnapshot createdSnapshot2 = snapshotClient.create(snapshot2, true);
+        assertNotNull(createdSnapshot2);
+        assertEquals(SECOND_IDENTITY, createdSnapshot2.getSnapshotMetadata().getAuthor());
     }
 
     @Test

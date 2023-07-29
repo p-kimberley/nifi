@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.annotation.behavior.DefaultRunDuration;
 import org.apache.nifi.annotation.behavior.DynamicProperty;
 import org.apache.nifi.annotation.behavior.DynamicRelationship;
 import org.apache.nifi.annotation.behavior.EventDriven;
@@ -61,12 +62,12 @@ import org.apache.nifi.processor.util.StandardValidators;
 
 @EventDriven
 @SideEffectFree
-@SupportsBatching
+@SupportsBatching(defaultDuration = DefaultRunDuration.TWENTY_FIVE_MILLIS)
 @InputRequirement(Requirement.INPUT_REQUIRED)
 @TriggerWhenAnyDestinationAvailable
 @Tags({"distribute", "load balance", "route", "round robin", "weighted"})
 @CapabilityDescription("Distributes FlowFiles to downstream processors based on a Distribution Strategy. If using the Round Robin "
-        + "strategy, the default is to assign each destination a weighting of 1 (evenly distributed). However, optional properties"
+        + "strategy, the default is to assign each destination a weighting of 1 (evenly distributed). However, optional properties "
         + "can be added to the change this; adding a property with the name '5' and value '10' means that the relationship with name "
         + "'5' will be receive 10 FlowFiles in each iteration instead of 1.")
 @DynamicProperty(name = "The relationship name (positive number)", value = "The relationship Weight (positive number)", description = "Adding a "

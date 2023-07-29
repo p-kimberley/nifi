@@ -16,17 +16,38 @@
  */
 package org.apache.nifi.cdc.mysql.event.io;
 
-import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.processor.ProcessSession;
-import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.cdc.mysql.event.BinlogTableEventInfo;
 
 import java.io.IOException;
+import java.io.Serializable;
 
 /**
  * An abstract base class for writing MYSQL table-related binlog events into flow file(s), e.g.
  */
 public abstract class AbstractBinlogTableEventWriter<T extends BinlogTableEventInfo> extends AbstractBinlogEventWriter<T> {
+
+    protected Object getWritableObject(Integer type, Serializable value) {
+        if (value == null) {
+            return null;
+        }
+        if (type == null) {
+            if (value instanceof byte[]) {
+                return new String((byte[]) value);
+            } else if (value instanceof Number) {
+                return value;
+            } else {
+                return null;
+            }
+        } else {
+            if (value instanceof byte[]) {
+                return new String((byte[]) value);
+            } else if (value instanceof Number) {
+                return value;
+            } else {
+                return value.toString();
+            }
+        }
+    }
 
     protected void writeJson(T event) throws IOException {
         super.writeJson(event);
@@ -45,21 +66,5 @@ public abstract class AbstractBinlogTableEventWriter<T extends BinlogTableEventI
         } else {
             jsonGenerator.writeNullField("table_id");
         }
-    }
-
-    // Default implementation for table-related binlog events
-    @Override
-    public long writeEvent(ProcessSession session, String transitUri, T eventInfo, long currentSequenceId, Relationship relationship) {
-        FlowFile flowFile = session.create();
-        flowFile = session.write(flowFile, (outputStream) -> {
-            super.startJson(outputStream, eventInfo);
-            writeJson(eventInfo);
-            // Nothing in the body
-            super.endJson();
-        });
-        flowFile = session.putAllAttributes(flowFile, getCommonAttributes(currentSequenceId, eventInfo));
-        session.transfer(flowFile, relationship);
-        session.getProvenanceReporter().receive(flowFile, transitUri);
-        return currentSequenceId + 1;
     }
 }

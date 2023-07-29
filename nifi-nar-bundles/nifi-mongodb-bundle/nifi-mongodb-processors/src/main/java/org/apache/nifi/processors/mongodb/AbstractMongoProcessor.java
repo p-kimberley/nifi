@@ -19,15 +19,14 @@
 package org.apache.nifi.processors.mongodb;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mongodb.MongoClient;
-import com.mongodb.MongoClientOptions;
-import com.mongodb.MongoClientOptions.Builder;
-import com.mongodb.MongoClientURI;
+import com.mongodb.ConnectionString;
+import com.mongodb.MongoClientSettings;
+import com.mongodb.client.MongoClient;
 import com.mongodb.WriteConcern;
+import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
@@ -45,6 +44,7 @@ import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
+import org.apache.nifi.deprecation.log.DeprecationLoggerFactory;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.mongodb.MongoDBClientService;
@@ -230,7 +230,7 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
     protected MongoDBClientService clientService;
 
     @OnScheduled
-    public final void createClient(ProcessContext context) throws IOException {
+    public final void createClient(ProcessContext context) {
         if (context.getProperty(CLIENT_SERVICE).isSet()) {
             clientService = context.getProperty(CLIENT_SERVICE).asControllerService(MongoDBClientService.class);
             return;
@@ -253,21 +253,24 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
         }
 
         try {
-            if(sslContext == null) {
-                mongoClient = new MongoClient(new MongoClientURI(getURI(context)));
-            } else {
-                mongoClient = new MongoClient(new MongoClientURI(getURI(context), getClientOptions(sslContext)));
-            }
+            final String uri = getURI(context);
+            final MongoClientSettings.Builder builder = getClientSettings(uri, sslContext);
+            final MongoClientSettings clientSettings = builder.build();
+            mongoClient = MongoClients.create(clientSettings);
         } catch (Exception e) {
             getLogger().error("Failed to schedule {} due to {}", new Object[] { this.getClass().getName(), e }, e);
             throw e;
         }
     }
 
-    protected Builder getClientOptions(final SSLContext sslContext) {
-        MongoClientOptions.Builder builder = MongoClientOptions.builder();
-        builder.sslEnabled(true);
-        builder.sslContext(sslContext);
+    protected MongoClientSettings.Builder getClientSettings(final String uri, final SSLContext sslContext) {
+        final MongoClientSettings.Builder builder = MongoClientSettings.builder();
+        builder.applyConnectionString(new ConnectionString(uri));
+        if (sslContext != null) {
+            builder.applyToSslSettings(sslBuilder ->
+                    sslBuilder.enabled(true).context(sslContext)
+            );
+        }
         return builder;
     }
 
@@ -370,6 +373,11 @@ public abstract class AbstractMongoProcessor extends AbstractProcessor {
 
         boolean clientIsSet = context.getProperty(CLIENT_SERVICE).isSet();
         boolean uriIsSet    = context.getProperty(URI).isSet();
+
+        if (uriIsSet) {
+            DeprecationLoggerFactory.getLogger(getClass()).warn("The MongoDB URI and other client " +
+                    "connection properties should be replaced with an implementation of the MongoClientService");
+        }
 
         if (clientIsSet && uriIsSet) {
             String msg = "The client service and URI fields cannot be set at the same time.";

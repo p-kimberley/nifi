@@ -15,11 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM apacheminific2:${minifi.version}
+FROM apache/nifi-minifi-c2:${minifi.version}-maven
 
 USER root
 
-RUN apk update \
-    && apk add python
+RUN apt-get update && apt-get install -y python3
 
 USER c2

@@ -36,7 +36,11 @@ import static org.apache.nifi.processors.aws.credentials.provider.factory.Creden
 import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_NAME;
 import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_PROXY_HOST;
 import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_PROXY_PORT;
+import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_STS_CUSTOM_SIGNER_CLASS_NAME;
+import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_STS_CUSTOM_SIGNER_MODULE_LOCATION;
+import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_STS_REGION;
 import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_STS_ENDPOINT;
+import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.ASSUME_ROLE_STS_SIGNER_OVERRIDE;
 import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.MAX_SESSION_TIME;
 import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.PROFILE_NAME;
 import static org.apache.nifi.processors.aws.credentials.provider.factory.CredentialPropertyDescriptors.USE_ANONYMOUS_CREDENTIALS;
@@ -61,7 +65,11 @@ public class MockAWSProcessor extends AbstractAWSCredentialsProviderProcessor<Am
             ASSUME_ROLE_EXTERNAL_ID,
             ASSUME_ROLE_PROXY_HOST,
             ASSUME_ROLE_PROXY_PORT,
-            ASSUME_ROLE_STS_ENDPOINT
+            ASSUME_ROLE_STS_REGION,
+            ASSUME_ROLE_STS_ENDPOINT,
+            ASSUME_ROLE_STS_SIGNER_OVERRIDE,
+            ASSUME_ROLE_STS_CUSTOM_SIGNER_CLASS_NAME,
+            ASSUME_ROLE_STS_CUSTOM_SIGNER_MODULE_LOCATION
     );
 
     @Override
@@ -87,8 +95,7 @@ public class MockAWSProcessor extends AbstractAWSCredentialsProviderProcessor<Am
     @Override
     protected AmazonS3Client createClient(final ProcessContext context, final AWSCredentialsProvider credentialsProvider, final ClientConfiguration config) {
         getLogger().info("Creating client with credentials provider");
-        final AmazonS3Client s3 = new AmazonS3Client(credentialsProvider, config);
-        return s3;
+        return new AmazonS3Client(credentialsProvider, config);
     }
 
     /**
@@ -99,10 +106,7 @@ public class MockAWSProcessor extends AbstractAWSCredentialsProviderProcessor<Am
     @Override
     protected AmazonS3Client createClient(final ProcessContext context, final AWSCredentials credentials, final ClientConfiguration config) {
         getLogger().info("Creating client with awd credentials");
-
-        final AmazonS3Client s3 = new AmazonS3Client(credentials, config);
-
-        return s3;
+        return new AmazonS3Client(credentials, config);
     }
 
 }

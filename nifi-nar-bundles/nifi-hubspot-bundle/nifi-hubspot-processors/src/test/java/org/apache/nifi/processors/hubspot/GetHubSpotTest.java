@@ -16,27 +16,18 @@
  */
 package org.apache.nifi.processors.hubspot;
 
+import static org.apache.nifi.processors.hubspot.GetHubSpot.CURSOR_KEY;
+import static org.apache.nifi.processors.hubspot.GetHubSpot.END_INCREMENTAL_KEY;
+import static org.apache.nifi.processors.hubspot.GetHubSpot.START_INCREMENTAL_KEY;
+import static org.apache.nifi.processors.hubspot.HubSpotObjectType.COMPANIES;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import okhttp3.HttpUrl;
-import okhttp3.mockwebserver.MockResponse;
-import okhttp3.mockwebserver.MockWebServer;
-import org.apache.commons.io.IOUtils;
-import org.apache.nifi.components.PropertyDescriptor;
-import org.apache.nifi.components.state.Scope;
-import org.apache.nifi.processor.ProcessContext;
-import org.apache.nifi.reporting.InitializationException;
-import org.apache.nifi.util.MockFlowFile;
-import org.apache.nifi.util.TestRunner;
-import org.apache.nifi.util.TestRunners;
-import org.apache.nifi.web.client.StandardHttpUriBuilder;
-import org.apache.nifi.web.client.provider.service.StandardWebClientServiceProvider;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -46,14 +37,24 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-
-import static org.apache.nifi.processors.hubspot.GetHubSpot.CURSOR_KEY;
-import static org.apache.nifi.processors.hubspot.GetHubSpot.END_INCREMENTAL_KEY;
-import static org.apache.nifi.processors.hubspot.GetHubSpot.START_INCREMENTAL_KEY;
-import static org.apache.nifi.processors.hubspot.HubSpotObjectType.COMPANIES;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import okhttp3.HttpUrl;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import org.apache.commons.io.IOUtils;
+import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.state.Scope;
+import org.apache.nifi.flowfile.attributes.CoreAttributes;
+import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.provenance.ProvenanceEventRecord;
+import org.apache.nifi.reporting.InitializationException;
+import org.apache.nifi.util.MockFlowFile;
+import org.apache.nifi.util.TestRunner;
+import org.apache.nifi.util.TestRunners;
+import org.apache.nifi.web.client.StandardHttpUriBuilder;
+import org.apache.nifi.web.client.provider.service.StandardWebClientServiceProvider;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 class GetHubSpotTest {
 
@@ -70,7 +71,8 @@ class GetHubSpotTest {
         server.start();
         baseUrl = server.url(BASE_URL);
 
-        final StandardWebClientServiceProvider standardWebClientServiceProvider = new StandardWebClientServiceProvider();
+        final StandardWebClientServiceProvider standardWebClientServiceProvider =
+                new StandardWebClientServiceProvider();
         final MockGetHubSpot mockGetHubSpot = new MockGetHubSpot(TEST_EPOCH_TIME);
 
         runner = TestRunners.newTestRunner(mockGetHubSpot);
@@ -99,12 +101,17 @@ class GetHubSpotTest {
         runner.run(1);
 
         final List<MockFlowFile> flowFiles = runner.getFlowFilesForRelationship(GetHubSpot.REL_SUCCESS);
+        final MockFlowFile flowFile = flowFiles.get(0);
+
         final String expectedFlowFileContent = getResourceAsString("expected_flowfile_content.json");
 
         final JsonNode expectedJsonNode = OBJECT_MAPPER.readTree(expectedFlowFileContent);
-        final JsonNode actualJsonNode = OBJECT_MAPPER.readTree(flowFiles.get(0).getContent());
+        final JsonNode actualJsonNode = OBJECT_MAPPER.readTree(flowFile.getContent());
 
+        flowFile.assertAttributeEquals(CoreAttributes.MIME_TYPE.key(), "application/json");
         assertEquals(expectedJsonNode, actualJsonNode);
+        List<ProvenanceEventRecord> provenanceEvents = runner.getProvenanceEvents();
+        assertEquals(baseUrl.toString(), provenanceEvents.get(0).getTransitUri());
     }
 
     @Test
@@ -118,6 +125,7 @@ class GetHubSpotTest {
         final List<MockFlowFile> flowFiles = runner.getFlowFilesForRelationship(GetHubSpot.REL_SUCCESS);
 
         assertTrue(flowFiles.isEmpty());
+        assertTrue(runner.getProvenanceEvents().isEmpty());
     }
 
     @Test
@@ -127,6 +135,7 @@ class GetHubSpotTest {
         server.enqueue(new MockResponse().setBody(response).setResponseCode(429));
 
         assertThrows(AssertionError.class, () -> runner.run(1));
+        assertTrue(runner.getProvenanceEvents().isEmpty());
     }
 
     @Test
@@ -169,6 +178,8 @@ class GetHubSpotTest {
         final String expectedJsonString = root.toString();
 
         assertEquals(OBJECT_MAPPER.readTree(expectedJsonString), OBJECT_MAPPER.readTree(requestBodyString));
+        List<ProvenanceEventRecord> provenanceEvents = runner.getProvenanceEvents();
+        assertEquals(baseUrl.toString(), provenanceEvents.get(0).getTransitUri());
     }
 
     @Test
@@ -216,6 +227,8 @@ class GetHubSpotTest {
         final String expectedJsonString = root.toString();
 
         assertEquals(OBJECT_MAPPER.readTree(expectedJsonString), OBJECT_MAPPER.readTree(requestBodyString));
+        List<ProvenanceEventRecord> provenanceEvents = runner.getProvenanceEvents();
+        assertEquals(baseUrl.toString(), provenanceEvents.get(0).getTransitUri());
     }
 
     static class MockGetHubSpot extends GetHubSpot {
@@ -242,13 +255,15 @@ class GetHubSpotTest {
         }
 
         @Override
-        public void onPropertyModified(final PropertyDescriptor descriptor, final String oldValue, final String newValue) {
+        public void onPropertyModified(final PropertyDescriptor descriptor, final String oldValue,
+                final String newValue) {
         }
     }
 
     private String getResourceAsString(final String resourceName) throws IOException {
         return IOUtils.toString(
-                Objects.requireNonNull(this.getClass().getClassLoader().getResourceAsStream(resourceName), resourceName),
+                Objects.requireNonNull(this.getClass().getClassLoader().getResourceAsStream(resourceName),
+                        resourceName),
                 StandardCharsets.UTF_8
         );
     }

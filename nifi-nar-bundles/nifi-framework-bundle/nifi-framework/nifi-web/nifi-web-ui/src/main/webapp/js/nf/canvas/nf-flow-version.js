@@ -175,6 +175,8 @@
 
         $('#import-flow-version-container').hide();
         $('#import-flow-version-label').text('');
+
+        $('#keep-parameter-context-container').hide();
     };
 
     /**
@@ -782,6 +784,9 @@
             }]
         }).show();
 
+        // show the checkbox to keep existing parameter context
+        $('#keep-parameter-context-container').show();
+
         loadRegistries($('#import-flow-version-dialog'), registryCombo, bucketCombo, flowCombo, selectBucketImportVersion, function (bucketEntity) {
             return true;
         }).done(function () {
@@ -815,9 +820,43 @@
                 }
             }]).modal('show');
 
+            // resetting the checkbox
+            $('#keepExistingParameterContext').removeClass('checkbox-unchecked').addClass('checkbox-checked');
+
             // hide the new process group dialog
             $('#new-process-group-dialog').modal('hide');
         });
+    };
+
+    /**
+     * Loads details for a specified flow.
+     *
+     * @param registryIdentifier
+     * @param bucketIdentifier
+     * @param flowIdentifier
+     */
+
+     var loadFlowDetails = function (registryIdentifier, bucketIdentifier, flowIdentifier) {
+        return $.ajax({
+            type: 'GET',
+            url: '../nifi-api/flow/registries/' + encodeURIComponent(registryIdentifier) + '/buckets/' + encodeURIComponent(bucketIdentifier) + '/flows/' + encodeURIComponent(flowIdentifier) + '/details',
+            dataType: 'json'
+        }).done(function (response) {
+            var flowVersionDetailsEl = $('#import-flow-version-details');
+            var flowDescriptionContainerEl = $('#import-flow-description-container');
+            if (response.versionedFlow.description) {
+                flowVersionDetailsEl.text(response.versionedFlow.description);
+                // show borders if appropriate
+                if (flowVersionDetailsEl.get(0).scrollHeight > Math.round(flowDescriptionContainerEl.innerHeight())) {
+                    flowDescriptionContainerEl.css('border-width', '1px');
+                } else {
+                    flowDescriptionContainerEl.css('border-width', '0');
+                }
+            } else {
+                flowVersionDetailsEl.text('No description provided.');
+                flowDescriptionContainerEl.css('border-width', '0');
+            }
+        }).fail(nfErrorHandler.handleAjaxError);
     };
 
     /**
@@ -910,7 +949,8 @@
                 options: versionedFlows,
                 select: function (selectedFlow) {
                     if (nfCommon.isDefinedAndNotNull(selectedFlow.value)) {
-                        selectFlow(registryIdentifier, bucketIdentifier, selectedFlow.value)
+                        selectFlow(registryIdentifier, bucketIdentifier, selectedFlow.value);
+                        loadFlowDetails(registryIdentifier, bucketIdentifier, selectedFlow.value);
                     } else {
                         var importFlowVersionGrid = $('#import-flow-version-table').data('gridInstance');
                         var importFlowVersionData = importFlowVersionGrid.getData();
@@ -1013,7 +1053,10 @@
         return $.ajax({
             type: 'POST',
             data: JSON.stringify(processGroupEntity),
-            url: '../nifi-api/process-groups/' + encodeURIComponent(nfCanvasUtils.getGroupId()) + '/process-groups',
+            url: '../nifi-api/process-groups/' + encodeURIComponent(nfCanvasUtils.getGroupId()) + '/process-groups?'
+                + $.param({
+                    'parameterContextHandlingStrategy' : $('#keepExistingParameterContext').hasClass('checkbox-checked') ? 'KEEP_EXISTING' : 'REPLACE'
+                }),
             dataType: 'json',
             contentType: 'application/json'
         }).done(function (response) {
@@ -1886,6 +1929,9 @@
                         // show the current version information
                         $('#import-flow-version-container').show();
                         $('#import-flow-version-label').text(versionControlInformation.version);
+
+                        // hide the checkbox to keep existing parameter context
+                        $('#keep-parameter-context-container').hide();
 
                         // record the versionControlInformation
                         $('#import-flow-version-process-group-id').data('versionControlInformation', versionControlInformation).data('revision', groupVersionControlInformation.processGroupRevision).text(processGroupId);

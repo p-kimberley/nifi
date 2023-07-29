@@ -161,7 +161,7 @@ public class FlowFromDOMFactory {
             return getFlowRegistryClientFromOldStyleConfig(element);
         }
 
-        dto.setId(getString(element, "identifier"));
+        dto.setId(getString(element, "id"));
         dto.setName(getString(element, "name"));
         dto.setDescription(getString(element, "description"));
         dto.setUri(getString(element, "uri"));
@@ -296,6 +296,7 @@ public class FlowFromDOMFactory {
         dto.setDefaultFlowFileExpiration(getString(element, "defaultFlowFileExpiration"));
         dto.setDefaultBackPressureObjectThreshold(getLong(element, "defaultBackPressureObjectThreshold"));
         dto.setDefaultBackPressureDataSizeThreshold(getString(element, "defaultBackPressureDataSizeThreshold"));
+        dto.setLogFileSuffix(getString(element, "logFileSuffix"));
 
         final Map<String, String> variables = new HashMap<>();
         final NodeList variableList = DomUtils.getChildNodesByTagName(element, "variable");

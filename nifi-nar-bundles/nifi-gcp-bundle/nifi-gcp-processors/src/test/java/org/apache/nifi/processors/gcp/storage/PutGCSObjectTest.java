@@ -21,6 +21,7 @@ import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageException;
+import com.google.cloud.storage.StorageOptions;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
@@ -78,7 +79,7 @@ public class PutGCSObjectTest extends AbstractGCSTest {
     private static final String MD5 = "test-md5";
     private static final String CRC32C = "test-crc32c";
     private static final Storage.PredefinedAcl ACL = BUCKET_OWNER_READ;
-    private static final String ENCRYPTION_KEY = "test-encryption-key";
+    private static final String ENCRYPTION_KEY = "12345678";
     private static final Boolean OVERWRITE = false;
     private static final String CONTENT_DISPOSITION_TYPE = "inline";
 
@@ -89,7 +90,7 @@ public class PutGCSObjectTest extends AbstractGCSTest {
     private static final String CONTENT_ENCODING = "test-content-encoding";
     private static final String CONTENT_LANGUAGE = "test-content-language";
     private static final String ENCRYPTION = "test-encryption";
-    private static final String ENCRYPTION_SHA256 = "test-encryption-256";
+    private static final String ENCRYPTION_SHA256 = "12345678";
     private static final String ETAG = "test-etag";
     private static final String GENERATED_ID = "test-generated-id";
     private static final String MEDIA_LINK = "test-media-link";
@@ -99,10 +100,14 @@ public class PutGCSObjectTest extends AbstractGCSTest {
     private static final String OWNER_DOMAIN = "test-owner-domain";
     private static final String OWNER_PROJECT_ID = "test-owner-project-id";
     private static final String URI = "test-uri";
+    private static final String STORAGE_API_URL = "https://localhost";
     private static final String CONTENT_DISPOSITION = "attachment; filename=\"" + FILENAME + "\"";
     private static final Long CREATE_TIME = 1234L;
     private static final Long UPDATE_TIME = 4567L;
     private final static Long GENERATION = 5L;
+
+    @Mock
+    StorageOptions storageOptions;
 
     @Mock
     Storage storage;
@@ -136,7 +141,9 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testSuccessfulPutOperationNoParameters() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);
@@ -167,7 +174,9 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testSuccessfulPutOperation() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);
@@ -180,7 +189,7 @@ public class PutGCSObjectTest extends AbstractGCSTest {
         runner.setProperty(PutGCSObject.ENCRYPTION_KEY, ENCRYPTION_KEY);
         runner.setProperty(PutGCSObject.OVERWRITE, String.valueOf(OVERWRITE));
         runner.setProperty(PutGCSObject.CONTENT_DISPOSITION_TYPE, CONTENT_DISPOSITION_TYPE);
-
+        runner.setProperty(PutGCSObject.GZIPCONTENT, Boolean.FALSE.toString());
         runner.assertValid();
 
         when(storage.createFrom(blobInfoArgumentCaptor.capture(),
@@ -245,7 +254,9 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testSuccessfulPutOperationWithUserMetadata() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);
@@ -292,7 +303,10 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testAttributesSetOnSuccessfulPut() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
+
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);
@@ -360,7 +374,9 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testAclAttributeUser() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);
@@ -386,7 +402,9 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testAclAttributeGroup() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);
@@ -413,7 +431,9 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testAclAttributeDomain() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);
@@ -440,7 +460,9 @@ public class PutGCSObjectTest extends AbstractGCSTest {
 
     @Test
     public void testAclAttributeProject() throws Exception {
-        reset(storage, blob);
+        reset(storageOptions, storage, blob);
+        when(storageOptions.getHost()).thenReturn(STORAGE_API_URL);
+        when(storage.getOptions()).thenReturn(storageOptions);
         final PutGCSObject processor = getProcessor();
         final TestRunner runner = buildNewRunner(processor);
         addRequiredPropertiesToRunner(runner);

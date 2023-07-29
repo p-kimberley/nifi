@@ -19,49 +19,60 @@ package org.apache.nifi.graph;
 import org.apache.nifi.util.NoOpProcessor;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.neo4j.driver.v1.AuthTokens;
 import org.neo4j.driver.v1.Driver;
 import org.neo4j.driver.v1.GraphDatabase;
 import org.neo4j.driver.v1.Session;
 import org.neo4j.driver.v1.StatementResult;
+import org.testcontainers.containers.Neo4jContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Neo4J Cypher integration tests.  Please set the neo4j url, user and password according to your setup.
+ * Neo4J Cypher integration tests.
  */
+@Testcontainers
 public class ITNeo4JCypher3Executor {
+
+    @Container
+    private static Neo4jContainer<?> neo4jContainer =
+            new Neo4jContainer<>(DockerImageName.parse("neo4j:3.5"))
+                    .withAdminPassword("testing1234");
+
     protected TestRunner runner;
     protected Driver driver;
-    protected String neo4jUrl = "bolt://localhost:7687";
     protected String user = "neo4j";
     protected String password = "testing1234";
 
     private GraphClientService clientService;
     private GraphQueryResultCallback EMPTY_CALLBACK = (record, hasMore) -> {};
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         clientService = new Neo4JCypher3ClientService();
         runner = TestRunners.newTestRunner(NoOpProcessor.class);
         runner.addControllerService("clientService", clientService);
+        runner.setProperty(clientService, Neo4JCypher3ClientService.CONNECTION_URL, neo4jContainer.getBoltUrl());
         runner.setProperty(clientService, Neo4JCypher3ClientService.USERNAME, user);
         runner.setProperty(clientService, Neo4JCypher3ClientService.PASSWORD, password);
         runner.enableControllerService(clientService);
-        driver = GraphDatabase.driver(neo4jUrl, AuthTokens.basic(user, password));
+        driver = GraphDatabase.driver(neo4jContainer.getBoltUrl(), AuthTokens.basic(user, password));
         executeSession("match (n) detach delete n");
 
         StatementResult result = executeSession("match (n) return n");
 
-        assertEquals("nodes should be equal", 0, result.list().size());
+        assertEquals(0, result.list().size(), "nodes should be equal");
     }
 
     protected StatementResult executeSession(String statement) {
@@ -70,7 +81,7 @@ public class ITNeo4JCypher3Executor {
         }
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         runner = null;
         if (driver != null) {

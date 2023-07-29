@@ -19,6 +19,7 @@ package org.apache.nifi.processors.azure.storage;
 import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.processor.Processor;
 import org.apache.nifi.processors.azure.storage.utils.AzureStorageUtils;
+import org.apache.nifi.processors.azure.storage.utils.BlobAttributes;
 import org.apache.nifi.serialization.record.MockRecordWriter;
 import org.apache.nifi.util.MockFlowFile;
 import org.junit.jupiter.api.Test;
@@ -174,7 +175,8 @@ public class ITListAzureBlobStorage_v12 extends AbstractAzureBlobStorage_v12IT {
 
         runner.assertAllFlowFilesTransferred(ListAzureBlobStorage_v12.REL_SUCCESS, 1);
         MockFlowFile flowFile = runner.getFlowFilesForRelationship(ListAzureBlobStorage_v12.REL_SUCCESS).get(0);
-        assertFlowFileBlobAttributes(flowFile, getContainerName(), "blob5", "Test".length());
+        assertFlowFileCommonBlobAttributes(flowFile, getContainerName(), "blob5");
+        assertFlowFileResultBlobAttributes(flowFile, "Test".length());
     }
 
     private void uploadBlobs() throws Exception {
@@ -197,7 +199,7 @@ public class ITListAzureBlobStorage_v12 extends AbstractAzureBlobStorage_v12IT {
         Set<String> expectedBlobNames = new HashSet<>(Arrays.asList(blobNames));
 
         for (MockFlowFile flowFile : flowFiles) {
-            String blobName = flowFile.getAttribute("azure.blobname");
+            String blobName = flowFile.getAttribute(BlobAttributes.ATTR_NAME_BLOBNAME);
             assertTrue(expectedBlobNames.remove(blobName), "Blob should not be listed: " + blobName);
 
             assertFlowFile(flowFile, blobName);
@@ -207,8 +209,8 @@ public class ITListAzureBlobStorage_v12 extends AbstractAzureBlobStorage_v12IT {
     }
 
     private void assertFlowFile(MockFlowFile flowFile, String blobName) throws Exception {
-        assertFlowFileBlobAttributes(flowFile, getContainerName(), blobName, BLOB_DATA.length);
-
+        assertFlowFileCommonBlobAttributes(flowFile, getContainerName(), blobName);
+        assertFlowFileResultBlobAttributes(flowFile, BLOB_DATA.length);
         flowFile.assertAttributeEquals(CoreAttributes.FILENAME.key(), blobName.substring(blobName.lastIndexOf('/') + 1));
 
         flowFile.assertContentEquals(EMPTY_CONTENT);

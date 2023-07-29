@@ -102,7 +102,6 @@ public class NiFiProperties extends ApplicationProperties {
     public static final String REPOSITORY_CONTENT_PREFIX = "nifi.content.repository.directory.";
     public static final String CONTENT_REPOSITORY_IMPLEMENTATION = "nifi.content.repository.implementation";
     public static final String MAX_APPENDABLE_CLAIM_SIZE = "nifi.content.claim.max.appendable.size";
-    public static final String MAX_FLOWFILES_PER_CLAIM = "nifi.content.claim.max.flow.files";
     public static final String CONTENT_ARCHIVE_MAX_RETENTION_PERIOD = "nifi.content.repository.archive.max.retention.period";
     public static final String CONTENT_ARCHIVE_MAX_USAGE_PERCENTAGE = "nifi.content.repository.archive.max.usage.percentage";
     public static final String CONTENT_ARCHIVE_BACK_PRESSURE_PERCENTAGE = "nifi.content.repository.archive.backpressure.percentage";
@@ -193,7 +192,9 @@ public class NiFiProperties extends ApplicationProperties {
     public static final String SECURITY_USER_OIDC_PREFERRED_JWSALGORITHM = "nifi.security.user.oidc.preferred.jwsalgorithm";
     public static final String SECURITY_USER_OIDC_ADDITIONAL_SCOPES = "nifi.security.user.oidc.additional.scopes";
     public static final String SECURITY_USER_OIDC_CLAIM_IDENTIFYING_USER = "nifi.security.user.oidc.claim.identifying.user";
+    public static final String NIFI_SECURITY_USER_OIDC_CLAIM_GROUPS = "nifi.security.user.oidc.claim.groups";
     public static final String SECURITY_USER_OIDC_FALLBACK_CLAIMS_IDENTIFYING_USER = "nifi.security.user.oidc.fallback.claims.identifying.user";
+    public static final String SECURITY_USER_OIDC_TOKEN_REFRESH_WINDOW = "nifi.security.user.oidc.token.refresh.window";
 
     // apache knox
     public static final String SECURITY_USER_KNOX_URL = "nifi.security.user.knox.url";
@@ -242,6 +243,7 @@ public class NiFiProperties extends ApplicationProperties {
     public static final String WEB_REQUEST_IP_WHITELIST = "nifi.web.request.ip.whitelist";
     public static final String WEB_SHOULD_SEND_SERVER_VERSION = "nifi.web.should.send.server.version";
     public static final String WEB_REQUEST_LOG_FORMAT = "nifi.web.request.log.format";
+    public static final String WEB_JMX_METRICS_ALLOWED_FILTER_PATTERN = "nifi.web.jmx.metrics.allowed.filter.pattern";
 
     // ui properties
     public static final String UI_BANNER_TEXT = "nifi.ui.banner.text";
@@ -276,6 +278,7 @@ public class NiFiProperties extends ApplicationProperties {
     public static final String ZOOKEEPER_CONNECT_TIMEOUT = "nifi.zookeeper.connect.timeout";
     public static final String ZOOKEEPER_SESSION_TIMEOUT = "nifi.zookeeper.session.timeout";
     public static final String ZOOKEEPER_ROOT_NODE = "nifi.zookeeper.root.node";
+    public static final String ZOOKEEPER_CLIENT_ENSEMBLE_TRACKER = "nifi.zookeeper.client.ensembleTracker";
     public static final String ZOOKEEPER_CLIENT_SECURE = "nifi.zookeeper.client.secure";
     public static final String ZOOKEEPER_SECURITY_KEYSTORE = "nifi.zookeeper.security.keystore";
     public static final String ZOOKEEPER_SECURITY_KEYSTORE_TYPE = "nifi.zookeeper.security.keystoreType";
@@ -356,7 +359,6 @@ public class NiFiProperties extends ApplicationProperties {
     public static final String DEFAULT_NAR_LIBRARY_DIR = "./lib";
     public static final String DEFAULT_NAR_LIBRARY_AUTOLOAD_DIR = "./extensions";
     public static final String DEFAULT_FLOWFILE_CHECKPOINT_INTERVAL = "20 secs";
-    public static final int DEFAULT_MAX_FLOWFILES_PER_CLAIM = 100;
     public static final String DEFAULT_MAX_APPENDABLE_CLAIM_SIZE = "1 MB";
     public static final int DEFAULT_QUEUE_SWAP_THRESHOLD = 20000;
     public static final long DEFAULT_BACKPRESSURE_COUNT = 10_000L;
@@ -368,6 +370,7 @@ public class NiFiProperties extends ApplicationProperties {
     public static final String DEFAULT_ZOOKEEPER_SESSION_TIMEOUT = "3 secs";
     public static final String DEFAULT_ZOOKEEPER_ROOT_NODE = "/nifi";
     public static final boolean DEFAULT_ZOOKEEPER_CLIENT_SECURE = false;
+    public static final boolean DEFAULT_ZOOKEEPER_CLIENT_ENSEMBLE_TRACKER = true;
     public static final String DEFAULT_ZOOKEEPER_AUTH_TYPE = "default";
     public static final String DEFAULT_ZOOKEEPER_KERBEROS_REMOVE_HOST_FROM_PRINCIPAL = "true";
     public static final String DEFAULT_ZOOKEEPER_KERBEROS_REMOVE_REALM_FROM_PRINCIPAL = "true";
@@ -381,6 +384,7 @@ public class NiFiProperties extends ApplicationProperties {
     public static final String DEFAULT_SECURITY_USER_OIDC_CONNECT_TIMEOUT = "5 secs";
     public static final String DEFAULT_SECURITY_USER_OIDC_READ_TIMEOUT = "5 secs";
     public static final String DEFAULT_SECURITY_USER_OIDC_TRUSTSTORE_STRATEGY = "JDK";
+    private static final String DEFAULT_SECURITY_USER_OIDC_TOKEN_REFRESH_WINDOW = "60 secs";
     public static final String DEFAULT_SECURITY_USER_SAML_METADATA_SIGNING_ENABLED = "false";
     public static final String DEFAULT_SECURITY_USER_SAML_REQUEST_SIGNING_ENABLED = "false";
     public static final String DEFAULT_SECURITY_USER_SAML_WANT_ASSERTIONS_SIGNED = "true";
@@ -1146,6 +1150,17 @@ public class NiFiProperties extends ApplicationProperties {
     }
 
     /**
+     * Returns the claim to be used to extract user groups from the OIDC payload.
+     * Claim must be requested by adding the scope for it.
+     * Default is 'groups'.
+     *
+     * @return The claim to be used to extract user groups.
+     */
+    public String getOidcClaimGroups() {
+        return getProperty(NIFI_SECURITY_USER_OIDC_CLAIM_GROUPS, "groups").trim();
+    }
+
+    /**
      * Returns the list of fallback claims to be used to identify a user when the configured claim is empty for a user
      *
      * @return The list of fallback claims to be used to identify the user
@@ -1162,6 +1177,10 @@ public class NiFiProperties extends ApplicationProperties {
 
     public String getOidcClientTruststoreStrategy() {
         return getProperty(SECURITY_USER_OIDC_TRUSTSTORE_STRATEGY, DEFAULT_SECURITY_USER_OIDC_TRUSTSTORE_STRATEGY);
+    }
+
+    public String getOidcTokenRefreshWindow() {
+        return getProperty(SECURITY_USER_OIDC_TOKEN_REFRESH_WINDOW, DEFAULT_SECURITY_USER_OIDC_TOKEN_REFRESH_WINDOW);
     }
 
     public boolean shouldSendServerVersion() {
@@ -1528,22 +1547,6 @@ public class NiFiProperties extends ApplicationProperties {
         return provenanceRepositoryPaths;
     }
 
-    /**
-     * Returns the number of claims to keep open for writing. Ideally, this will be at
-     * least as large as the number of threads that will be updating the repository simultaneously but we don't want
-     * to get too large because it will hold open up to this many FileOutputStreams.
-     * <p>
-     * Default is {@link #DEFAULT_MAX_FLOWFILES_PER_CLAIM}
-     *
-     * @return the maximum number of flow files per claim
-     */
-    public int getMaxFlowFilesPerClaim() {
-        try {
-            return Integer.parseInt(getProperty(MAX_FLOWFILES_PER_CLAIM));
-        } catch (NumberFormatException nfe) {
-            return DEFAULT_MAX_FLOWFILES_PER_CLAIM;
-        }
-    }
 
     /**
      * Returns the maximum size, in bytes, that claims should grow before writing a new file. This means that we won't continually write to one
@@ -1705,6 +1708,17 @@ public class NiFiProperties extends ApplicationProperties {
         }
 
         return Boolean.parseBoolean(clientSecure);
+    }
+
+    public boolean isZookeeperClientWithEnsembleTracker() {
+        final String defaultValue = String.valueOf(DEFAULT_ZOOKEEPER_CLIENT_ENSEMBLE_TRACKER);
+        final String withEnsembleTracker = getProperty(ZOOKEEPER_CLIENT_ENSEMBLE_TRACKER, defaultValue).trim();
+
+        if (!"true".equalsIgnoreCase(withEnsembleTracker) && !"false".equalsIgnoreCase(withEnsembleTracker)) {
+            throw new RuntimeException(String.format("%s was '%s', expected true or false", NiFiProperties.ZOOKEEPER_CLIENT_ENSEMBLE_TRACKER, withEnsembleTracker));
+        }
+
+        return Boolean.parseBoolean(withEnsembleTracker);
     }
 
     public boolean isZooKeeperTlsConfigurationPresent() {

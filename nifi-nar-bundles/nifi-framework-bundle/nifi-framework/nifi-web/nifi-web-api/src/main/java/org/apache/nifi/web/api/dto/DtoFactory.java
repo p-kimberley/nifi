@@ -1071,6 +1071,7 @@ public final class DtoFactory {
         snapshot.setBytesSent(processGroupStatus.getBytesSent());
         snapshot.setFlowFilesReceived(processGroupStatus.getFlowFilesReceived());
         snapshot.setBytesReceived(processGroupStatus.getBytesReceived());
+        snapshot.setProcessingNanos(processGroupStatus.getProcessingNanos());
 
         snapshot.setActiveThreadCount(processGroupStatus.getActiveThreadCount());
         snapshot.setTerminatedThreadCount(processGroupStatus.getTerminatedThreadCount());
@@ -2683,6 +2684,7 @@ public final class DtoFactory {
         dto.setDefaultFlowFileExpiration(group.getDefaultFlowFileExpiration());
         dto.setDefaultBackPressureObjectThreshold(group.getDefaultBackPressureObjectThreshold());
         dto.setDefaultBackPressureDataSizeThreshold(group.getDefaultBackPressureDataSizeThreshold());
+        dto.setLogFileSuffix(group.getLogFileSuffix());
 
         final ParameterContext parameterContext = group.getParameterContext();
         if (parameterContext != null) {
@@ -2810,6 +2812,7 @@ public final class DtoFactory {
         dto.setFlowName(versionControlInfo.getFlowName());
         dto.setFlowDescription(versionControlInfo.getFlowDescription());
         dto.setVersion(versionControlInfo.getVersion());
+        dto.setStorageLocation(versionControlInfo.getStorageLocation());
 
         final VersionedFlowStatus status = versionControlInfo.getStatus();
         final VersionedFlowState state = status.getState();
@@ -4224,7 +4227,6 @@ public final class DtoFactory {
             } else {
                 final List<AllowableValueEntity> allowableValues = new ArrayList<>();
                 final List<String> controllerServiceIdentifiers = new ArrayList<>(controllerServiceProvider.getControllerServiceIdentifiers(serviceDefinition, groupId));
-                Collections.sort(controllerServiceIdentifiers, Collator.getInstance(Locale.US));
                 for (final String serviceIdentifier : controllerServiceIdentifiers) {
                     final ControllerServiceNode service = controllerServiceProvider.getControllerServiceNode(serviceIdentifier);
                     final boolean isServiceAuthorized = service.isAuthorized(authorizer, RequestAction.READ, NiFiUserUtils.getNiFiUser());
@@ -4235,6 +4237,7 @@ public final class DtoFactory {
                     allowableValue.setValue(serviceIdentifier);
                     allowableValues.add(entityFactory.createAllowableValueEntity(allowableValue, isServiceAuthorized));
                 }
+                allowableValues.sort(Comparator.comparing(e -> e.getAllowableValue().getDisplayName()));
                 dto.setAllowableValues(allowableValues);
             }
         } else {
@@ -4246,7 +4249,6 @@ public final class DtoFactory {
                 allowableValueDto.setDescription(allowableValue.getDescription());
                 allowableValues.add(entityFactory.createAllowableValueEntity(allowableValueDto, true));
             }
-
             dto.setAllowableValues(allowableValues);
         }
 
@@ -4526,6 +4528,7 @@ public final class DtoFactory {
         copy.setDefaultFlowFileExpiration(original.getDefaultFlowFileExpiration());
         copy.setDefaultBackPressureObjectThreshold(original.getDefaultBackPressureObjectThreshold());
         copy.setDefaultBackPressureDataSizeThreshold(original.getDefaultBackPressureDataSizeThreshold());
+        copy.setLogFileSuffix(original.getLogFileSuffix());
 
         copy.setRunningCount(original.getRunningCount());
         copy.setStoppedCount(original.getStoppedCount());
@@ -4594,6 +4597,7 @@ public final class DtoFactory {
         copy.setVersion(original.getVersion());
         copy.setState(original.getState());
         copy.setStateExplanation(original.getStateExplanation());
+        copy.setStorageLocation(original.getStorageLocation());
         return copy;
     }
 

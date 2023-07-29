@@ -19,15 +19,16 @@ package org.apache.nifi.processors.iceberg.converter;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.Validate;
 import org.apache.iceberg.data.GenericRecord;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.nifi.serialization.record.DataType;
 import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.serialization.record.RecordField;
+import org.apache.nifi.serialization.record.RecordSchema;
+import org.apache.nifi.serialization.record.util.DataTypeUtils;
 
-import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.sql.Time;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -37,6 +38,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.apache.nifi.processors.iceberg.converter.RecordFieldGetter.createFieldGetter;
@@ -46,60 +48,96 @@ import static org.apache.nifi.processors.iceberg.converter.RecordFieldGetter.cre
  */
 public class GenericDataConverters {
 
-    static class SameTypeConverter implements DataConverter<Object, Object> {
+    static class PrimitiveTypeConverter extends DataConverter<Object, Object> {
+        final Type.PrimitiveType targetType;
+        final DataType sourceType;
 
-        static final SameTypeConverter INSTANCE = new SameTypeConverter();
+        public PrimitiveTypeConverter(final Type.PrimitiveType type, final DataType dataType) {
+            targetType = type;
+            sourceType = dataType;
+        }
 
         @Override
         public Object convert(Object data) {
-            return data;
+            switch (targetType.typeId()) {
+                case BOOLEAN:
+                    return DataTypeUtils.toBoolean(data, null);
+                case INTEGER:
+                    return DataTypeUtils.toInteger(data, null);
+                case LONG:
+                    return DataTypeUtils.toLong(data, null);
+                case FLOAT:
+                    return DataTypeUtils.toFloat(data, null);
+                case DOUBLE:
+                    return DataTypeUtils.toDouble(data, null);
+                case DATE:
+                    return DataTypeUtils.toLocalDate(data, () -> DataTypeUtils.getDateTimeFormatter(sourceType.getFormat(), ZoneId.systemDefault()), null);
+                case UUID:
+                    return DataTypeUtils.toUUID(data);
+                case STRING:
+                default:
+                    return DataTypeUtils.toString(data, () -> null);
+            }
         }
     }
 
-    static class TimeConverter implements DataConverter<Time, LocalTime> {
+    static class TimeConverter extends DataConverter<Object, LocalTime> {
 
-        static final TimeConverter INSTANCE = new TimeConverter();
+        private final String timeFormat;
+
+        public TimeConverter(final String format) {
+            this.timeFormat = format;
+        }
 
         @Override
-        public LocalTime convert(Time data) {
-            return data.toLocalTime();
+        public LocalTime convert(Object data) {
+            return DataTypeUtils.toTime(data, () -> DataTypeUtils.getDateFormat(timeFormat), null).toLocalTime();
         }
     }
 
-    static class TimestampConverter implements DataConverter<Timestamp, LocalDateTime> {
+    static class TimestampConverter extends DataConverter<Object, LocalDateTime> {
 
-        static final TimestampConverter INSTANCE = new TimestampConverter();
+        private final DataType dataType;
+
+        public TimestampConverter(final DataType dataType) {
+            this.dataType = dataType;
+        }
 
         @Override
-        public LocalDateTime convert(Timestamp data) {
-            return data.toLocalDateTime();
+        public LocalDateTime convert(Object data) {
+            final Timestamp convertedTimestamp = DataTypeUtils.toTimestamp(data, () -> DataTypeUtils.getDateFormat(dataType.getFormat()), null);
+            return convertedTimestamp.toLocalDateTime();
         }
     }
 
-    static class TimestampWithTimezoneConverter implements DataConverter<Timestamp, OffsetDateTime> {
+    static class TimestampWithTimezoneConverter extends DataConverter<Object, OffsetDateTime> {
 
-        static final TimestampWithTimezoneConverter INSTANCE = new TimestampWithTimezoneConverter();
+        private final DataType dataType;
+
+        public TimestampWithTimezoneConverter(final DataType dataType) {
+            this.dataType = dataType;
+        }
 
         @Override
-        public OffsetDateTime convert(Timestamp data) {
-            return OffsetDateTime.ofInstant(data.toInstant(), ZoneId.of("UTC"));
+        public OffsetDateTime convert(Object data) {
+            final Timestamp convertedTimestamp = DataTypeUtils.toTimestamp(data, () -> DataTypeUtils.getDateFormat(dataType.getFormat()), null);
+            return OffsetDateTime.ofInstant(convertedTimestamp.toInstant(), ZoneId.of("UTC"));
         }
     }
 
-    static class UUIDtoByteArrayConverter implements DataConverter<UUID, byte[]> {
-
-        static final UUIDtoByteArrayConverter INSTANCE = new UUIDtoByteArrayConverter();
+    static class UUIDtoByteArrayConverter extends DataConverter<Object, byte[]> {
 
         @Override
-        public byte[] convert(UUID data) {
+        public byte[] convert(Object data) {
+            final UUID uuid = DataTypeUtils.toUUID(data);
             ByteBuffer byteBuffer = ByteBuffer.wrap(new byte[16]);
-            byteBuffer.putLong(data.getMostSignificantBits());
-            byteBuffer.putLong(data.getLeastSignificantBits());
+            byteBuffer.putLong(uuid.getMostSignificantBits());
+            byteBuffer.putLong(uuid.getLeastSignificantBits());
             return byteBuffer.array();
         }
     }
 
-    static class FixedConverter implements DataConverter<Byte[], byte[]> {
+    static class FixedConverter extends DataConverter<Byte[], byte[]> {
 
         private final int length;
 
@@ -114,9 +152,7 @@ public class GenericDataConverters {
         }
     }
 
-    static class BinaryConverter implements DataConverter<Byte[], ByteBuffer> {
-
-        static final BinaryConverter INSTANCE = new BinaryConverter();
+    static class BinaryConverter extends DataConverter<Byte[], ByteBuffer> {
 
         @Override
         public ByteBuffer convert(Byte[] data) {
@@ -124,8 +160,7 @@ public class GenericDataConverters {
         }
     }
 
-    static class BigDecimalConverter implements DataConverter<BigDecimal, BigDecimal> {
-
+    static class BigDecimalConverter extends DataConverter<Object, BigDecimal> {
         private final int precision;
         private final int scale;
 
@@ -135,41 +170,46 @@ public class GenericDataConverters {
         }
 
         @Override
-        public BigDecimal convert(BigDecimal data) {
-            Validate.isTrue(data.scale() == scale, "Cannot write value as decimal(%s,%s), wrong scale: %s", precision, scale, data);
-            Validate.isTrue(data.precision() <= precision, "Cannot write value as decimal(%s,%s), invalid precision: %s", precision, scale, data);
-            return data;
+        public BigDecimal convert(Object data) {
+            if (data instanceof BigDecimal) {
+                BigDecimal bigDecimal = (BigDecimal) data;
+                Validate.isTrue(bigDecimal.scale() == scale, "Cannot write value as decimal(%s,%s), wrong scale %s for value: %s", precision, scale, bigDecimal.scale(), data);
+                Validate.isTrue(bigDecimal.precision() <= precision, "Cannot write value as decimal(%s,%s), invalid precision %s for value: %s",
+                        precision, scale, bigDecimal.precision(), data);
+                return bigDecimal;
+            }
+            return DataTypeUtils.toBigDecimal(data, null);
         }
     }
 
-    static class ArrayConverter<T, S> implements DataConverter<T[], List<S>> {
-        private final DataConverter<T, S> fieldConverter;
+    static class ArrayConverter<S, T> extends DataConverter<S[], List<T>> {
+        private final DataConverter<S, T> fieldConverter;
         private final ArrayElementGetter.ElementGetter elementGetter;
 
-        ArrayConverter(DataConverter<T, S> elementConverter, DataType dataType) {
+        ArrayConverter(DataConverter<S, T> elementConverter, DataType dataType) {
             this.fieldConverter = elementConverter;
             this.elementGetter = ArrayElementGetter.createElementGetter(dataType);
         }
 
         @Override
         @SuppressWarnings("unchecked")
-        public List<S> convert(T[] data) {
+        public List<T> convert(S[] data) {
             final int numElements = data.length;
-            List<S> result = new ArrayList<>(numElements);
+            final List<T> result = new ArrayList<>(numElements);
             for (int i = 0; i < numElements; i += 1) {
-                result.add(i, fieldConverter.convert((T) elementGetter.getElementOrNull(data, i)));
+                result.add(i, fieldConverter.convert((S) elementGetter.getElementOrNull(data[i])));
             }
             return result;
         }
     }
 
-    static class MapConverter<K, V, L, B> implements DataConverter<Map<K, V>, Map<L, B>> {
-        private final DataConverter<K, L> keyConverter;
-        private final DataConverter<V, B> valueConverter;
+    static class MapConverter<SK, SV, TK, TV> extends DataConverter<Map<SK, SV>, Map<TK, TV>> {
+        private final DataConverter<SK, TK> keyConverter;
+        private final DataConverter<SV, TV> valueConverter;
         private final ArrayElementGetter.ElementGetter keyGetter;
         private final ArrayElementGetter.ElementGetter valueGetter;
 
-        MapConverter(DataConverter<K, L> keyConverter, DataType keyType, DataConverter<V, B> valueConverter, DataType valueType) {
+        MapConverter(DataConverter<SK, TK> keyConverter, DataType keyType, DataConverter<SV, TV> valueConverter, DataType valueType) {
             this.keyConverter = keyConverter;
             this.keyGetter = ArrayElementGetter.createElementGetter(keyType);
             this.valueConverter = valueConverter;
@@ -178,53 +218,53 @@ public class GenericDataConverters {
 
         @Override
         @SuppressWarnings("unchecked")
-        public Map<L, B> convert(Map<K, V> data) {
+        public Map<TK, TV> convert(Map<SK, SV> data) {
             final int mapSize = data.size();
             final Object[] keyArray = data.keySet().toArray();
             final Object[] valueArray = data.values().toArray();
-            Map<L, B> result = new HashMap<>(mapSize);
+            final Map<TK, TV> result = new HashMap<>(mapSize);
             for (int i = 0; i < mapSize; i += 1) {
-                result.put(keyConverter.convert((K) keyGetter.getElementOrNull(keyArray, i)), valueConverter.convert((V) valueGetter.getElementOrNull(valueArray, i)));
+                result.put(keyConverter.convert((SK) keyGetter.getElementOrNull(keyArray[i])), valueConverter.convert((SV) valueGetter.getElementOrNull(valueArray[i])));
             }
 
             return result;
         }
     }
 
-    static class RecordConverter implements DataConverter<Record, GenericRecord> {
+    static class RecordConverter extends DataConverter<Record, GenericRecord> {
 
-        private final DataConverter<?, ?>[] converters;
-        private final RecordFieldGetter.FieldGetter[] getters;
+        private final List<DataConverter<?, ?>> converters;
+        private final Map<String, RecordFieldGetter.FieldGetter> getters;
 
         private final Types.StructType schema;
 
-        RecordConverter(List<DataConverter<?, ?>> converters, List<RecordField> recordFields, Types.StructType schema) {
+        RecordConverter(List<DataConverter<?, ?>> converters, RecordSchema recordSchema, Types.StructType schema) {
             this.schema = schema;
-            this.converters = (DataConverter<?, ?>[]) Array.newInstance(DataConverter.class, converters.size());
-            this.getters = new RecordFieldGetter.FieldGetter[converters.size()];
-            for (int i = 0; i < converters.size(); i += 1) {
-                final RecordField recordField = recordFields.get(i);
-                this.converters[i] = converters.get(i);
-                this.getters[i] = createFieldGetter(recordField.getDataType(), recordField.getFieldName(), recordField.isNullable());
+            this.converters = converters;
+            this.getters = new HashMap<>(converters.size());
+
+            for (DataConverter<?, ?> converter : converters) {
+                final Optional<RecordField> recordField = recordSchema.getField(converter.getSourceFieldName());
+                final RecordField field = recordField.get();
+                // creates a record field accessor for every data converter
+                getters.put(converter.getTargetFieldName(), createFieldGetter(field.getDataType(), field.getFieldName(), field.isNullable()));
             }
         }
 
         @Override
         public GenericRecord convert(Record data) {
-            final GenericRecord template = GenericRecord.create(schema);
-            // GenericRecord.copy() is more performant then GenericRecord.create(StructType) since NAME_MAP_CACHE access is eliminated. Using copy here to gain performance.
-            final GenericRecord result = template.copy();
+            final GenericRecord record = GenericRecord.create(schema);
 
-            for (int i = 0; i < converters.length; i += 1) {
-                result.set(i, convert(data, i, converters[i]));
+            for (DataConverter<?, ?> converter : converters) {
+                record.setField(converter.getTargetFieldName(), convert(data, converter));
             }
 
-            return result;
+            return record;
         }
 
         @SuppressWarnings("unchecked")
-        private <T, S> S convert(Record record, int pos, DataConverter<T, S> converter) {
-            return converter.convert((T) getters[pos].getFieldOrNull(record));
+        private <S, T> T convert(Record record, DataConverter<S, T> converter) {
+            return converter.convert((S) getters.get(converter.getTargetFieldName()).getFieldOrNull(record));
         }
     }
 }

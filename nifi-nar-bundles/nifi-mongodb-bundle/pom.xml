@@ -19,37 +19,42 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-nar-bundles</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
     <artifactId>nifi-mongodb-bundle</artifactId>
     <packaging>pom</packaging>
 
     <modules>
-	    <module>nifi-mongodb-client-service-api</module>
+        <module>nifi-mongodb-client-service-api</module>
         <module>nifi-mongodb-client-service-api-nar</module>
         <module>nifi-mongodb-services</module>
         <module>nifi-mongodb-services-nar</module>
-	    <module>nifi-mongodb-processors</module>
+        <module>nifi-mongodb-processors</module>
         <module>nifi-mongodb-nar</module>
     </modules>
 
     <properties>
-        <mongo.driver.version>4.7.1</mongo.driver.version>
+        <mongo.driver.version>4.10.2</mongo.driver.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
             <dependency>
+                <groupId>org.mongodb</groupId>
+                <artifactId>mongodb-driver-sync</artifactId>
+                <version>${mongo.driver.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.apache.nifi</groupId>
                 <artifactId>nifi-mongodb-processors</artifactId>
-                <version>1.19.0-SNAPSHOT</version>
+                <version>1.23.0</version>
             </dependency>
             <!-- Override commons-compress -->
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-compress</artifactId>
-                <version>1.21</version>
+                <version>1.23.0</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

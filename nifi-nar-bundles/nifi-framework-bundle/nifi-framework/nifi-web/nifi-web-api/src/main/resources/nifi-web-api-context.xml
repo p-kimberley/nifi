@@ -381,6 +381,12 @@
         <property name="variableRegistry" ref="variableRegistry"/>
     </bean>
 
+    <bean id="nameCollisionResolver" class="org.apache.nifi.web.util.ParameterContextNameCollisionResolver" />
+
+    <bean id="parameterContextReplacer" class="org.apache.nifi.web.util.ParameterContextReplacer">
+        <constructor-arg ref="nameCollisionResolver" />
+    </bean>
+
     <!-- rest endpoints -->
     <bean id="flowResource" class="org.apache.nifi.web.api.FlowResource" scope="singleton">
         <property name="serviceFacade" ref="serviceFacade"/>
@@ -501,6 +507,7 @@
         <property name="clusterComponentLifecycle" ref="clusterComponentLifecycle" />
         <property name="localComponentLifecycle" ref="localComponentLifecycle" />
         <property name="dtoFactory" ref="dtoFactory" />
+        <property name="parameterContextReplacer" ref="parameterContextReplacer" />
     </bean>
     <bean id="versionsResource" class="org.apache.nifi.web.api.VersionsResource" scope="singleton">
         <property name="serviceFacade" ref="serviceFacade" />
@@ -608,6 +615,7 @@
         <property name="requestReplicator" ref="requestReplicator" />
         <property name="authorizer" ref="authorizer"/>
         <property name="flowController" ref="flowController" />
+        <property name="jmxMetricsService" ref="jmxMetricsService" />
     </bean>
     <bean id="accessResource" class="org.apache.nifi.web.api.AccessResource" scope="singleton">
         <property name="logoutRequestManager" ref="logoutRequestManager" />
@@ -626,11 +634,6 @@
         <property name="clusterCoordinator" ref="clusterCoordinator"/>
         <property name="requestReplicator" ref="requestReplicator" />
         <property name="flowController" ref="flowController" />
-    </bean>
-    <bean id="oidcResource" class="org.apache.nifi.web.api.OIDCAccessResource" scope="singleton">
-        <property name="oidcService" ref="oidcService"/>
-        <property name="properties" ref="nifiProperties"/>
-        <property name="bearerTokenProvider" ref="bearerTokenProvider"/>
     </bean>
     <bean id="accessPolicyResource" class="org.apache.nifi.web.api.AccessPolicyResource" scope="singleton">
         <constructor-arg ref="serviceFacade"/>
@@ -659,6 +662,15 @@
         <property name="dtoFactory" ref="dtoFactory" />
         <property name="clusterComponentLifecycle" ref="clusterComponentLifecycle" />
         <property name="localComponentLifecycle" ref="localComponentLifecycle" />
+    </bean>
+    <bean id="jmxMetricsService" class="org.apache.nifi.web.api.metrics.jmx.StandardJmxMetricsService">
+        <property name="properties" ref="nifiProperties"/>
+        <property name="metricsCollector" ref="metricsCollector"/>
+    </bean>
+    <bean id="metricsResultConverter" class="org.apache.nifi.web.api.metrics.jmx.JmxMetricsResultConverter">
+    </bean>
+    <bean id="metricsCollector" class="org.apache.nifi.web.api.metrics.jmx.JmxMetricsCollector">
+        <constructor-arg ref="metricsResultConverter"/>
     </bean>
 
     <!-- enable aop -->
@@ -706,6 +718,11 @@
         <property name="auditService" ref="auditService"/>
         <property name="processGroupDAO" ref="processGroupDAO"/>
     </bean>
+    <bean id="labelAuditor" class="org.apache.nifi.audit.LabelAuditor">
+        <property name="serviceFacade" ref="serviceFacade"/>
+        <property name="auditService" ref="auditService"/>
+        <property name="processGroupDAO" ref="processGroupDAO"/>
+    </bean>
     <bean id="snippetAuditor" class="org.apache.nifi.audit.SnippetAuditor">
         <property name="serviceFacade" ref="serviceFacade"/>
         <property name="auditService" ref="auditService"/>
@@ -722,6 +739,7 @@
         <property name="processGroupAuditor" ref="processGroupAuditor"/>
         <property name="processorAuditor" ref="processorAuditor"/>
         <property name="relationshipAuditor" ref="relationshipAuditor"/>
+        <property name="labelAuditor" ref="labelAuditor"/>
     </bean>
     <bean id="controllerServiceAuditor" class="org.apache.nifi.audit.ControllerServiceAuditor">
         <property name="serviceFacade" ref="serviceFacade"/>

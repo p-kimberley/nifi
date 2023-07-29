@@ -51,12 +51,14 @@ import org.apache.nifi.connectable.ConnectableType;
 import org.apache.nifi.controller.ScheduledState;
 import org.apache.nifi.controller.serialization.FlowEncodingVersion;
 import org.apache.nifi.controller.service.ControllerServiceState;
+import org.apache.nifi.flow.VersionedFlowCoordinates;
 import org.apache.nifi.flow.VersionedParameterContext;
 import org.apache.nifi.flow.VersionedProcessGroup;
 import org.apache.nifi.parameter.ParameterContext;
 import org.apache.nifi.registry.client.NiFiRegistryException;
 import org.apache.nifi.registry.flow.FlowRegistryBucket;
 import org.apache.nifi.registry.flow.FlowRegistryUtils;
+import org.apache.nifi.registry.flow.FlowSnapshotContainer;
 import org.apache.nifi.registry.flow.RegisteredFlow;
 import org.apache.nifi.registry.flow.RegisteredFlowSnapshot;
 import org.apache.nifi.registry.flow.VersionedFlowState;
@@ -71,6 +73,7 @@ import org.apache.nifi.web.api.dto.ConnectionDTO;
 import org.apache.nifi.web.api.dto.ControllerServiceDTO;
 import org.apache.nifi.web.api.dto.DropRequestDTO;
 import org.apache.nifi.web.api.dto.FlowSnippetDTO;
+import org.apache.nifi.web.api.dto.ParameterContextHandlingStrategy;
 import org.apache.nifi.web.api.dto.PortDTO;
 import org.apache.nifi.web.api.dto.PositionDTO;
 import org.apache.nifi.web.api.dto.ProcessGroupDTO;
@@ -121,6 +124,7 @@ import org.apache.nifi.web.api.entity.VariableRegistryUpdateRequestEntity;
 import org.apache.nifi.web.api.request.ClientIdParameter;
 import org.apache.nifi.web.api.request.LongParameter;
 import org.apache.nifi.web.security.token.NiFiAuthenticationToken;
+import org.apache.nifi.web.util.ParameterContextReplacer;
 import org.apache.nifi.web.util.Pause;
 import org.apache.nifi.xml.processing.stream.StandardXMLStreamReaderProvider;
 import org.apache.nifi.xml.processing.stream.XMLStreamReaderProvider;
@@ -203,6 +207,7 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
     private ConnectionResource connectionResource;
     private TemplateResource templateResource;
     private ControllerServiceResource controllerServiceResource;
+    private ParameterContextReplacer parameterContextReplacer;
 
     private final ConcurrentMap<String, VariableRegistryUpdateRequest> varRegistryUpdateRequests = new ConcurrentHashMap<>();
     private static final int MAX_VARIABLE_REGISTRY_UPDATE_REQUESTS = 100;
@@ -1238,7 +1243,7 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
 
         boolean continuePolling = true;
         while (continuePolling) {
-            final Set<ControllerServiceEntity> serviceEntities = serviceFacade.getControllerServices(groupId, false, true);
+            final Set<ControllerServiceEntity> serviceEntities = serviceFacade.getControllerServices(groupId, false, true, false);
 
             // update the affected controller services
             updateAffectedControllerServices(serviceEntities, updateRequest);
@@ -1967,8 +1972,16 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
             @ApiParam(
                     value = "The process group configuration details.",
                     required = true
-        ) final ProcessGroupEntity requestProcessGroupEntity) {
-
+            )
+            final ProcessGroupEntity requestProcessGroupEntity,
+            @ApiParam(
+                    value = "Handling Strategy controls whether to keep or replace Parameter Contexts",
+                    defaultValue = "KEEP_EXISTING"
+            )
+            @QueryParam("parameterContextHandlingStrategy")
+            @DefaultValue("KEEP_EXISTING")
+            final ParameterContextHandlingStrategy parameterContextHandlingStrategy
+    ) {
         if (requestProcessGroupEntity == null || requestProcessGroupEntity.getComponent() == null) {
             throw new IllegalArgumentException("Process group details must be specified.");
         }
@@ -2011,18 +2024,32 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
         if (versionControlInfo != null && requestProcessGroupEntity.getVersionedFlowSnapshot() == null) {
             // Step 1: Ensure that user has write permissions to the Process Group. If not, then immediately fail.
             // Step 2: Retrieve flow from Flow Registry
-            final RegisteredFlowSnapshot flowSnapshot = getFlowFromRegistry(versionControlInfo);
+            final FlowSnapshotContainer flowSnapshotContainer = getFlowFromRegistry(versionControlInfo);
+            final RegisteredFlowSnapshot flowSnapshot = flowSnapshotContainer.getFlowSnapshot();
 
-            // Step 3: Resolve Bundle info
+            // Step 3: Enrich version control info came from UI
+            if (flowSnapshot.getFlowContents() != null) {
+                final VersionedFlowCoordinates versionedFlowCoordinates = flowSnapshot.getFlowContents().getVersionedFlowCoordinates();
+                if (versionedFlowCoordinates != null) {
+                    versionControlInfo.setStorageLocation(versionedFlowCoordinates.getStorageLocation());
+                }
+            }
+
+            // Step 4: Replace parameter contexts if necessary
+            if (ParameterContextHandlingStrategy.REPLACE.equals(parameterContextHandlingStrategy)) {
+                parameterContextReplacer.replaceParameterContexts(flowSnapshot, serviceFacade.getParameterContexts());
+            }
+
+            // Step 5: Resolve Bundle info
             serviceFacade.discoverCompatibleBundles(flowSnapshot.getFlowContents());
 
             // If there are any Controller Services referenced that are inherited from the parent group, resolve those to point to the appropriate Controller Service, if we are able to.
-            serviceFacade.resolveInheritedControllerServices(flowSnapshot, groupId, NiFiUserUtils.getNiFiUser());
+            serviceFacade.resolveInheritedControllerServices(flowSnapshotContainer, groupId, NiFiUserUtils.getNiFiUser());
 
             // If there are any Parameter Providers referenced by Parameter Contexts, resolve these to point to the appropriate Parameter Provider, if we are able to.
             serviceFacade.resolveParameterProviders(flowSnapshot, NiFiUserUtils.getNiFiUser());
 
-            // Step 4: Update contents of the ProcessGroupDTO passed in to include the components that need to be added.
+            // Step 6: Update contents of the ProcessGroupDTO passed in to include the components that need to be added.
             requestProcessGroupEntity.setVersionedFlowSnapshot(flowSnapshot);
         }
 
@@ -2031,7 +2058,7 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
             serviceFacade.verifyImportProcessGroup(versionControlInfo, flowSnapshot.getFlowContents(), groupId);
         }
 
-        // Step 6: Replicate the request or call serviceFacade.updateProcessGroup
+        // Step 7: Replicate the request or call serviceFacade.updateProcessGroup
         if (isReplicateRequest()) {
             return replicate(HttpMethod.POST, requestProcessGroupEntity);
         } else if (isDisconnectedFromCluster()) {
@@ -2086,8 +2113,9 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
         );
     }
 
-    private RegisteredFlowSnapshot getFlowFromRegistry(final VersionControlInformationDTO versionControlInfo) {
-        final RegisteredFlowSnapshot flowSnapshot = serviceFacade.getVersionedFlowSnapshot(versionControlInfo, true);
+    private FlowSnapshotContainer getFlowFromRegistry(final VersionControlInformationDTO versionControlInfo) {
+        final FlowSnapshotContainer flowSnapshotContainer = serviceFacade.getVersionedFlowSnapshot(versionControlInfo, true);
+        final RegisteredFlowSnapshot flowSnapshot = flowSnapshotContainer.getFlowSnapshot();
         final FlowRegistryBucket bucket = flowSnapshot.getBucket();
         final RegisteredFlow flow = flowSnapshot.getFlow();
 
@@ -2099,7 +2127,7 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
         final VersionedFlowState flowState = flowSnapshot.isLatest() ? VersionedFlowState.UP_TO_DATE : VersionedFlowState.STALE;
         versionControlInfo.setState(flowState.name());
 
-        return flowSnapshot;
+        return flowSnapshotContainer;
     }
 
 
@@ -4161,8 +4189,9 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
         versionedFlowSnapshot.setSnapshotMetadata(null);
         sanitizeRegistryInfo(versionedFlowSnapshot.getFlowContents());
 
+        final FlowSnapshotContainer flowSnapshotContainer = new FlowSnapshotContainer(versionedFlowSnapshot);
         return initiateFlowUpdate(groupId, importEntity, true, "replace-requests",
-                "/nifi-api/process-groups/" + groupId + "/flow-contents", importEntity::getVersionedFlowSnapshot);
+                "/nifi-api/process-groups/" + groupId + "/flow-contents", () -> flowSnapshotContainer);
     }
 
     /**
@@ -4277,7 +4306,8 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
 
         // if there are any Controller Services referenced that are inherited from the parent group,
         // resolve those to point to the appropriate Controller Service, if we are able to.
-        serviceFacade.resolveInheritedControllerServices(deserializedSnapshot, groupId, NiFiUserUtils.getNiFiUser());
+        final FlowSnapshotContainer flowSnapshotContainer = new FlowSnapshotContainer(deserializedSnapshot);
+        serviceFacade.resolveInheritedControllerServices(flowSnapshotContainer, groupId, NiFiUserUtils.getNiFiUser());
 
         // If there are any Parameter Providers referenced by Parameter Contexts, resolve these to point to the appropriate Parameter Provider, if we are able to.
         serviceFacade.resolveParameterProviders(deserializedSnapshot, NiFiUserUtils.getNiFiUser());
@@ -4377,7 +4407,8 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
 
         // if there are any Controller Services referenced that are inherited from the parent group,
         // resolve those to point to the appropriate Controller Service, if we are able to.
-        serviceFacade.resolveInheritedControllerServices(versionedFlowSnapshot, groupId, NiFiUserUtils.getNiFiUser());
+        final FlowSnapshotContainer flowSnapshotContainer = new FlowSnapshotContainer(versionedFlowSnapshot);
+        serviceFacade.resolveInheritedControllerServices(flowSnapshotContainer, groupId, NiFiUserUtils.getNiFiUser());
 
         // If there are any Parameter Providers referenced by Parameter Contexts, resolve these to point to the appropriate Parameter Provider, if we are able to.
         serviceFacade.resolveParameterProviders(versionedFlowSnapshot, NiFiUserUtils.getNiFiUser());
@@ -4770,6 +4801,10 @@ public class ProcessGroupResource extends FlowUpdateResource<ProcessGroupImportE
 
     public void setControllerServiceResource(ControllerServiceResource controllerServiceResource) {
         this.controllerServiceResource = controllerServiceResource;
+    }
+
+    public void setParameterContextReplacer(ParameterContextReplacer parameterContextReplacer) {
+        this.parameterContextReplacer = parameterContextReplacer;
     }
 
     private static class DropEntity extends Entity {

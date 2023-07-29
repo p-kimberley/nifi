@@ -98,8 +98,8 @@ public abstract class AbstractFlowFileQueue implements FlowFileQueue {
     }
 
     @Override
-    public int getFlowFileExpiration(final TimeUnit timeUnit) {
-        return (int) timeUnit.convert(expirationPeriod.get().getMillis(), TimeUnit.MILLISECONDS);
+    public long getFlowFileExpiration(final TimeUnit timeUnit) {
+        return timeUnit.convert(expirationPeriod.get().getMillis(), TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -287,6 +287,8 @@ public abstract class AbstractFlowFileQueue implements FlowFileQueue {
             dropRequest.setDroppedSize(originalSize);
             dropRequest.setState(DropFlowFileState.COMPLETE);
             dropRequestMap.put(requestIdentifier, dropRequest);
+
+            logger.info("No FlowFiles to drop from {} for request {} because the queue is empty", this, requestIdentifier);
             return dropRequest;
         }
 
@@ -499,5 +501,10 @@ public abstract class AbstractFlowFileQueue implements FlowFileQueue {
     @Override
     public List<FlowFileRecord> poll(FlowFileFilter filter, Set<FlowFileRecord> expiredRecords) {
         return poll(filter, expiredRecords, PollStrategy.UNPENALIZED_FLOWFILES);
+    }
+
+    @Override
+    public int hashCode() {
+        return identifier.hashCode();
     }
 }

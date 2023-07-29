@@ -29,6 +29,7 @@ import org.apache.nifi.annotation.behavior.Stateful;
 import org.apache.nifi.annotation.behavior.TriggerSerially;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
 import org.apache.nifi.annotation.behavior.WritesAttributes;
+import org.apache.nifi.annotation.configuration.DefaultSchedule;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
@@ -45,7 +46,11 @@ import org.apache.nifi.processor.util.list.ListedEntityTracker;
 import org.apache.nifi.processors.azure.storage.utils.AzureStorageUtils;
 import org.apache.nifi.processors.azure.storage.utils.BlobInfo;
 import org.apache.nifi.processors.azure.storage.utils.BlobInfo.Builder;
+import org.apache.nifi.processors.azure.storage.utils.BlobServiceClientFactory;
+import org.apache.nifi.scheduling.SchedulingStrategy;
 import org.apache.nifi.serialization.record.RecordSchema;
+import org.apache.nifi.services.azure.storage.AzureStorageCredentialsDetails_v12;
+import org.apache.nifi.services.azure.storage.AzureStorageCredentialsService_v12;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -57,7 +62,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.nifi.processors.azure.AbstractAzureBlobProcessor_v12.STORAGE_CREDENTIALS_SERVICE;
-import static org.apache.nifi.processors.azure.AbstractAzureBlobProcessor_v12.createStorageClient;
+import static org.apache.nifi.processors.azure.storage.utils.AzureStorageUtils.getProxyOptions;
 import static org.apache.nifi.processors.azure.storage.utils.BlobAttributes.ATTR_DESCRIPTION_BLOBNAME;
 import static org.apache.nifi.processors.azure.storage.utils.BlobAttributes.ATTR_DESCRIPTION_BLOBTYPE;
 import static org.apache.nifi.processors.azure.storage.utils.BlobAttributes.ATTR_DESCRIPTION_CONTAINER;
@@ -98,6 +103,7 @@ import static org.apache.nifi.processors.azure.storage.utils.BlobAttributes.ATTR
         "(by default). This allows the Processor to list only blobs that have been added or modified after this date the next time that the Processor is run. State is " +
         "stored across the cluster so that this Processor can be run on Primary Node only and if a new Primary Node is selected, the new node can pick up " +
         "where the previous node left off, without duplicating the data.")
+@DefaultSchedule(strategy = SchedulingStrategy.TIMER_DRIVEN, period = "1 min")
 public class ListAzureBlobStorage_v12 extends AbstractListAzureProcessor<BlobInfo> {
 
     public static final PropertyDescriptor CONTAINER = new PropertyDescriptor.Builder()
@@ -145,7 +151,7 @@ public class ListAzureBlobStorage_v12 extends AbstractListAzureProcessor<BlobInf
             AzureStorageUtils.PROXY_CONFIGURATION_SERVICE
     ));
 
-    private BlobServiceClient storageClient;
+    private volatile BlobServiceClientFactory clientFactory;
 
     @Override
     protected List<PropertyDescriptor> getSupportedPropertyDescriptors() {
@@ -154,12 +160,12 @@ public class ListAzureBlobStorage_v12 extends AbstractListAzureProcessor<BlobInf
 
     @OnScheduled
     public void onScheduled(ProcessContext context) {
-        storageClient = createStorageClient(context);
+        clientFactory = new BlobServiceClientFactory(getLogger(), getProxyOptions(context));
     }
 
     @OnStopped
     public void onStopped() {
-        storageClient = null;
+        clientFactory = null;
     }
 
     @Override
@@ -211,6 +217,10 @@ public class ListAzureBlobStorage_v12 extends AbstractListAzureProcessor<BlobInf
 
         try {
             final List<BlobInfo> listing = new ArrayList<>();
+
+            final AzureStorageCredentialsService_v12 credentialsService = context.getProperty(STORAGE_CREDENTIALS_SERVICE).asControllerService(AzureStorageCredentialsService_v12.class);
+            final AzureStorageCredentialsDetails_v12 credentialsDetails = credentialsService.getCredentialsDetails(Collections.emptyMap());
+            final BlobServiceClient storageClient = clientFactory.getStorageClient(credentialsDetails);
 
             final BlobContainerClient containerClient = storageClient.getBlobContainerClient(containerName);
 

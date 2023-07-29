@@ -17,7 +17,27 @@
 package org.apache.nifi.processors.standard.db.impl;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.processors.standard.db.ColumnDescription;
 import org.apache.nifi.processors.standard.db.DatabaseAdapter;
+
+import java.sql.JDBCType;
+import java.sql.Types;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
+
+import static java.sql.Types.CHAR;
+import static java.sql.Types.CLOB;
+import static java.sql.Types.LONGNVARCHAR;
+import static java.sql.Types.LONGVARCHAR;
+import static java.sql.Types.NCHAR;
+import static java.sql.Types.NCLOB;
+import static java.sql.Types.NVARCHAR;
+import static java.sql.Types.OTHER;
+import static java.sql.Types.SQLXML;
+import static java.sql.Types.VARCHAR;
 
 /**
  * A Apache Phoenix database adapter that generates ANSI SQL.
@@ -86,5 +106,86 @@ public final class PhoenixDatabaseAdapter implements DatabaseAdapter {
             }
         }
         return query.toString();
+    }
+
+    @Override
+    public String getUpsertStatement(String table, List<String> columnNames, Collection<String> uniqueKeyColumnNames) {
+        if (org.apache.nifi.util.StringUtils.isEmpty(table)) {
+            throw new IllegalArgumentException("Table name cannot be null or blank");
+        }
+        if (columnNames == null || columnNames.isEmpty()) {
+            throw new IllegalArgumentException("Column names cannot be null or empty");
+        }
+        if (uniqueKeyColumnNames == null || uniqueKeyColumnNames.isEmpty()) {
+            throw new IllegalArgumentException("Key column names cannot be null or empty");
+        }
+
+        String columns = String.join(", ", columnNames);
+
+        String parameterizedUpsertValues = columnNames.stream()
+                .map(columnName -> "?")
+                .collect(Collectors.joining(", "));
+
+        StringBuilder statementStringBuilder = new StringBuilder("UPSERT INTO ")
+                .append(table)
+                .append("(").append(columns).append(")")
+                .append(" VALUES ")
+                .append("(").append(parameterizedUpsertValues).append(")");
+        return statementStringBuilder.toString();
+    }
+
+    @Override
+    public boolean supportsUpsert() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsCreateTableIfNotExists() {
+        return true;
+    }
+
+    @Override
+    public List<String> getAlterTableStatements(final String tableName, final List<ColumnDescription> columnsToAdd, final boolean quoteTableName, final boolean quoteColumnNames) {
+        List<String> columnsAndDatatypes = new ArrayList<>(columnsToAdd.size());
+        for (ColumnDescription column : columnsToAdd) {
+            String dataType = getSQLForDataType(column.getDataType());
+            StringBuilder sb = new StringBuilder("ADD COLUMN ")
+                    .append(quoteColumnNames ? getColumnQuoteString() : "")
+                    .append(column.getColumnName())
+                    .append(quoteColumnNames ? getColumnQuoteString() : "")
+                    .append(" ")
+                    .append(dataType);
+            columnsAndDatatypes.add(sb.toString());
+        }
+
+        StringBuilder alterTableStatement = new StringBuilder();
+        return Collections.singletonList(alterTableStatement.append("ALTER TABLE ")
+                .append(quoteTableName ? getTableQuoteString() : "")
+                .append(tableName)
+                .append(quoteTableName ? getTableQuoteString() : "")
+                .append(" ")
+                .append(String.join(", ", columnsAndDatatypes))
+                .toString());
+    }
+
+    @Override
+    public String getSQLForDataType(int sqlType) {
+        switch (sqlType) {
+            case Types.DOUBLE:
+                return "DOUBLE PRECISION";
+            case CHAR:
+            case LONGNVARCHAR:
+            case LONGVARCHAR:
+            case NCHAR:
+            case NVARCHAR:
+            case VARCHAR:
+            case CLOB:
+            case NCLOB:
+            case OTHER:
+            case SQLXML:
+                return "TEXT";
+            default:
+                return JDBCType.valueOf(sqlType).getName();
+        }
     }
 }

@@ -19,7 +19,7 @@
     <parent>
         <groupId>org.apache.nifi</groupId>
         <artifactId>nifi-nar-bundles</artifactId>
-        <version>1.19.0-SNAPSHOT</version>
+        <version>1.23.0</version>
     </parent>
 
     <artifactId>nifi-grpc-bundle</artifactId>
@@ -27,13 +27,14 @@
     <description>A bundle of processors that speak the gRPC protocol</description>
 
     <modules>
+        <module>nifi-grpc-common</module>
         <module>nifi-grpc-processors</module>
         <module>nifi-grpc-nar</module>
     </modules>
 
     <properties>
-        <grpc.version>1.48.0</grpc.version>
-        <protoc.version>3.21.4</protoc.version>
+        <grpc.version>1.56.1</grpc.version>
+        <protoc.version>3.22.5</protoc.version>
     </properties>
 
     <dependencyManagement>
@@ -41,7 +42,7 @@
             <dependency>
                 <groupId>org.apache.nifi</groupId>
                 <artifactId>nifi-grpc-processors</artifactId>
-                <version>1.19.0-SNAPSHOT</version>
+                <version>1.23.0</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

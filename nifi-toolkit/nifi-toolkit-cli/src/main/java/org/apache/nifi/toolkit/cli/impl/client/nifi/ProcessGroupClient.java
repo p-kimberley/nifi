@@ -18,6 +18,9 @@ package org.apache.nifi.toolkit.cli.impl.client.nifi;
 
 import org.apache.nifi.web.api.dto.TemplateDTO;
 import org.apache.nifi.web.api.entity.ControllerServiceEntity;
+import org.apache.nifi.web.api.entity.CopySnippetRequestEntity;
+import org.apache.nifi.web.api.entity.FlowComparisonEntity;
+import org.apache.nifi.web.api.entity.FlowEntity;
 import org.apache.nifi.web.api.entity.ProcessGroupEntity;
 import org.apache.nifi.web.api.entity.ProcessGroupImportEntity;
 import org.apache.nifi.web.api.entity.ProcessGroupReplaceRequestEntity;
@@ -33,6 +36,9 @@ import java.io.IOException;
 public interface ProcessGroupClient {
 
     ProcessGroupEntity createProcessGroup(String parentGroupdId, ProcessGroupEntity entity)
+            throws NiFiClientException, IOException;
+
+    ProcessGroupEntity createProcessGroup(String parentGroupdId, ProcessGroupEntity entity, boolean keepExisting)
             throws NiFiClientException, IOException;
 
     ProcessGroupEntity getProcessGroup(String processGroupId) throws NiFiClientException, IOException;
@@ -65,4 +71,8 @@ public interface ProcessGroupClient {
     ProcessGroupReplaceRequestEntity deleteProcessGroupReplaceRequest(String processGroupId, String requestId)
             throws NiFiClientException, IOException;
 
+    FlowEntity copySnippet(String processGroupId, CopySnippetRequestEntity copySnippetRequestEntity)
+        throws NiFiClientException, IOException;
+
+    FlowComparisonEntity getLocalModifications(String processGroupId) throws NiFiClientException, IOException;
 }

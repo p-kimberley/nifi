@@ -247,11 +247,24 @@ div.progress-label {
 #import-flow-version-table {
     overflow: hidden;
     position: absolute;
-    top: 190px;
+    top: 307px;
     left: 0px;
     right: 0px;
     bottom: 0px;
-    height: 225px;
+    height: 118px;
+}
+
+#import-flow-description-container {
+    border-color: rgba(0,0,0,0.12);
+    border-style: solid;
+    border-width: 0;
+    height: 48px;
+    overflow-y: auto;
+    width: calc(100% - 2px);
+}
+
+#import-flow-version-details {
+    padding: 2px;
 }
 
 #change-version-percent-complete {
@@ -261,6 +274,24 @@ div.progress-label {
 
 #change-version-percent-complete .ui-progressbar-value {
     border-radius: 0;
+}
+
+#import-flow-version-dialog .keep-parameter-context {
+    align-items: center;
+    display: flex;
+}
+
+.keep-parameter-context .nf-checkbox-label {
+    font-size: 12px;
+    font-weight: 500;
+    font-family: Roboto Slab;
+}
+
+.keep-parameter-context .fa {
+    color: #004849;
+    font-size: 12px;
+    line-height: 22px;
+    margin-left: 5px;
 }
 
 /*

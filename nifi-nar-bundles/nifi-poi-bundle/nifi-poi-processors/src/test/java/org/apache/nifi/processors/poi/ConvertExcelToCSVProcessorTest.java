@@ -35,6 +35,7 @@ import org.apache.nifi.util.TestRunners;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -111,6 +112,53 @@ public class ConvertExcelToCSVProcessorTest {
                 "987654321,42736.5,1023.45\n" +
                 "987654321,,\n" +
                 "987654321,,\n");
+    }
+
+    @Test
+    public void testBooleanFormatting() {
+        testRunner.enqueue(getClass().getResourceAsStream("/databooleans.xlsx"));
+        testRunner.run();
+
+        testRunner.assertTransferCount(ConvertExcelToCSVProcessor.SUCCESS, 1);
+        testRunner.assertTransferCount(ConvertExcelToCSVProcessor.ORIGINAL, 1);
+        testRunner.assertTransferCount(ConvertExcelToCSVProcessor.FAILURE, 0);
+
+        MockFlowFile ff = testRunner.getFlowFilesForRelationship(ConvertExcelToCSVProcessor.SUCCESS).get(0);
+        long rowsSheet = Long.parseLong(ff.getAttribute(ConvertExcelToCSVProcessor.ROW_NUM));
+        assertEquals(9, rowsSheet);
+
+        ff.assertContentEquals("Numbers,Timestamps,Money,Boolean\n"
+                + "1234.456,42736.5,123.45,TRUE\n"
+                + "1234.456,42736.5,123.45,FALSE\n"
+                + "1234.456,42736.5,123.45,TRUE\n"
+                + "1234.456,42736.5,1023.45,FALSE\n"
+                + "1234.456,42736.5,1023.45,TRUE\n"
+                + "987654321,42736.5,1023.45,FALSE\n"
+                + "987654321,,,\n"
+                + "987654321,,,\n");
+
+        testRunner.clearTransferState();
+        testRunner.setProperty(ConvertExcelToCSVProcessor.FORMAT_BOOLEANS, "false");
+        testRunner.enqueue(getClass().getResourceAsStream("/databooleans.xlsx"));
+        testRunner.run();
+
+        testRunner.assertTransferCount(ConvertExcelToCSVProcessor.SUCCESS, 1);
+        testRunner.assertTransferCount(ConvertExcelToCSVProcessor.ORIGINAL, 1);
+        testRunner.assertTransferCount(ConvertExcelToCSVProcessor.FAILURE, 0);
+
+        ff = testRunner.getFlowFilesForRelationship(ConvertExcelToCSVProcessor.SUCCESS).get(0);
+        rowsSheet = Long.parseLong(ff.getAttribute(ConvertExcelToCSVProcessor.ROW_NUM));
+        assertEquals(9, rowsSheet);
+
+        ff.assertContentEquals("Numbers,Timestamps,Money,Boolean\n"
+                + "1234.456,42736.5,123.45,1\n"
+                + "1234.456,42736.5,123.45,0\n"
+                + "1234.456,42736.5,123.45,1\n"
+                + "1234.456,42736.5,1023.45,0\n"
+                + "1234.456,42736.5,1023.45,1\n"
+                + "987654321,42736.5,1023.45,0\n"
+                + "987654321,,,\n"
+                + "987654321,,,\n");
     }
 
     @Test
@@ -521,6 +569,7 @@ public class ConvertExcelToCSVProcessorTest {
         testRunner.assertTransferCount(ConvertExcelToCSVProcessor.SUCCESS, 0);  //We aren't expecting any output to success here because the sheet doesn't exist
         testRunner.assertTransferCount(ConvertExcelToCSVProcessor.ORIGINAL, 1);
         testRunner.assertTransferCount(ConvertExcelToCSVProcessor.FAILURE, 0);
+        assertFalse(testRunner.getLogger().getWarnMessages().isEmpty());
     }
 
     /**

@@ -22,6 +22,8 @@ import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.components.resource.ResourceReferences;
 import org.apache.nifi.context.PropertyContext;
+import org.apache.nifi.deprecation.log.DeprecationLogger;
+import org.apache.nifi.deprecation.log.DeprecationLoggerFactory;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.exception.ProcessException;
@@ -37,6 +39,7 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -55,6 +58,11 @@ import static org.apache.commons.lang3.StringUtils.defaultIfBlank;
  */
 public class ScriptingComponentHelper {
     private static final String UNKNOWN_VERSION = "UNKNOWN";
+
+    private static final List<String> DEPRECATED_LANGUAGE_NAMES =
+            Arrays.asList("ECMAScript", "lua", "ruby");
+
+    private static final DeprecationLogger deprecationLogger = DeprecationLoggerFactory.getLogger(ScriptingComponentHelper.class);
 
     public PropertyDescriptor SCRIPT_ENGINE;
 
@@ -178,15 +186,21 @@ public class ScriptingComponentHelper {
             engineAllowableValues = engineList;
             AllowableValue[] engines = engineList.toArray(new AllowableValue[0]);
 
-            SCRIPT_ENGINE = new PropertyDescriptor.Builder()
+            final PropertyDescriptor.Builder enginePropertyBuilder = new PropertyDescriptor.Builder()
                     .name("Script Engine")
                     .required(true)
-                    .description("The engine to execute scripts")
-                    .allowableValues(engines)
-                    .defaultValue(engines[0].getValue())
+                    .description("Language Engine for executing scripts")
                     .required(true)
-                    .expressionLanguageSupported(ExpressionLanguageScope.NONE)
-                    .build();
+                    .expressionLanguageSupported(ExpressionLanguageScope.NONE);
+
+            if (engineList.isEmpty()) {
+                enginePropertyBuilder.description("No Script Engines found");
+            } else {
+                enginePropertyBuilder.allowableValues(engines);
+                enginePropertyBuilder.defaultValue(engines[0].getValue());
+            }
+
+            SCRIPT_ENGINE = enginePropertyBuilder.build();
             descriptors.add(SCRIPT_ENGINE);
         }
 
@@ -230,7 +244,7 @@ public class ScriptingComponentHelper {
             }
 
             // Get a list of URLs from the configurator (if present), or just convert modules from Strings to URLs
-            final String[] locations = modules.asLocations().toArray(new String[0]);
+            final String[] locations = (modules == null) ? new String[0] : modules.asLocations().toArray(new String[0]);
             final URL[] additionalClasspathURLs = ScriptRunnerFactory.getInstance().getModuleURLsForClasspath(scriptEngineName, locations, log);
 
 
@@ -265,7 +279,15 @@ public class ScriptingComponentHelper {
         scriptEngineName = context.getProperty(SCRIPT_ENGINE).getValue();
         scriptPath = context.getProperty(ScriptingComponentUtils.SCRIPT_FILE).evaluateAttributeExpressions().getValue();
         scriptBody = context.getProperty(ScriptingComponentUtils.SCRIPT_BODY).getValue();
-        modules = context.getProperty(ScriptingComponentUtils.MODULES).evaluateAttributeExpressions().asResources().flattenRecursively();
+        if ("python".equalsIgnoreCase(scriptEngineName)) {
+            modules = context.getProperty(ScriptingComponentUtils.MODULES).evaluateAttributeExpressions().asResources();
+        } else {
+            modules = context.getProperty(ScriptingComponentUtils.MODULES).evaluateAttributeExpressions().asResources().flattenRecursively();
+        }
+
+        if (DEPRECATED_LANGUAGE_NAMES.contains(scriptEngineName)) {
+            deprecationLogger.warn("Support for Script Engine Language [{}] is deprecated", scriptEngineName);
+        }
     }
 
     public void stop() {
@@ -280,6 +302,14 @@ public class ScriptingComponentHelper {
         final String engineVersion = defaultIfBlank(factory.getEngineVersion(), UNKNOWN_VERSION);
 
         final String description = String.format("%s %s [%s %s]", languageName, languageVersion, factory.getEngineName(), engineVersion);
-        return new AllowableValue(languageName, languageName, description);
+
+        final String displayName;
+        if (DEPRECATED_LANGUAGE_NAMES.contains(languageName)) {
+            displayName = String.format("%s DEPRECATED", languageName);
+        } else {
+            displayName = languageName;
+        }
+
+        return new AllowableValue(languageName, displayName, description);
     }
 }

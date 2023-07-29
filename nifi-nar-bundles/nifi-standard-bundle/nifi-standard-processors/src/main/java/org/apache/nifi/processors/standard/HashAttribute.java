@@ -30,6 +30,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.nifi.annotation.behavior.DefaultRunDuration;
 import org.apache.nifi.annotation.behavior.DynamicProperty;
 import org.apache.nifi.annotation.behavior.EventDriven;
 import org.apache.nifi.annotation.behavior.InputRequirement;
@@ -38,6 +39,7 @@ import org.apache.nifi.annotation.behavior.SideEffectFree;
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
+import org.apache.nifi.annotation.documentation.DeprecationNotice;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.flowfile.FlowFile;
@@ -98,7 +100,7 @@ import org.apache.nifi.processor.util.StandardValidators;
  */
 @EventDriven
 @SideEffectFree
-@SupportsBatching
+@SupportsBatching(defaultDuration = DefaultRunDuration.TWENTY_FIVE_MILLIS)
 @Tags({"attributes", "hash"})
 @InputRequirement(Requirement.INPUT_REQUIRED)
 @CapabilityDescription("Hashes together the key/value pairs of several flowfile attributes and adds the hash as a new attribute. "
@@ -114,6 +116,10 @@ import org.apache.nifi.processor.util.StandardValidators;
         + "group, the value of that group will be used when comparing flow file "
         + "attributes. Otherwise, the original flow file attribute's value will be used "
         + "if and only if the value matches the given regular expression.")
+@DeprecationNotice(
+        classNames = "org.apache.nifi.processors.attributes.UpdateAttribute",
+        reason = "UpdateAttribute can be configured using the hash Expression Language function to digest one or more attributes"
+)
 public class HashAttribute extends AbstractProcessor {
 
     public static final PropertyDescriptor HASH_VALUE_ATTRIBUTE = new PropertyDescriptor.Builder()
