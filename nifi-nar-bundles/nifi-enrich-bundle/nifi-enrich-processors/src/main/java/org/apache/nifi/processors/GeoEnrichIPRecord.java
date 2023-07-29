@@ -191,13 +191,13 @@ public class GeoEnrichIPRecord extends AbstractEnrichIP {
 
     @Override
     public void onTrigger(ProcessContext context, ProcessSession session) throws ProcessException {
-        final FlowFile inputFlowFile = session.get();
-        if (inputFlowFile == null) {
+        final FlowFile input = session.get();
+        if (input == null) {
             return;
         }
 
-        FlowFile output = session.create(input);
-        FlowFile notFound = splitOutput ? session.create(input) : null;
+        FlowFile outputFlowFile = session.create(input);
+        FlowFile notFoundFlowFile = splitOutput ? session.create(input) : null;
         try {
             if (isNeedsReload() || getWatcher().checkAndReset()) {
                 Lock dbWriteLock = getDbWriteLock();
@@ -219,25 +219,25 @@ public class GeoEnrichIPRecord extends AbstractEnrichIP {
         }
         DatabaseReader dbReader = databaseReaderRef.get();
         try (InputStream is = session.read(input);
-             OutputStream os = session.write(output);
-             OutputStream osNotFound = splitOutput ? session.write(notFound) : null) {
-            RecordPathCache cache = new RecordPathCache(GEO_PROPERTIES.size() + 1);
-            Map<PropertyDescriptor, RecordPath> paths = new HashMap<>();
+             OutputStream os = session.write(outputFlowFile);
+             OutputStream osNotFound = splitOutput ? session.write(notFoundFlowFile) : null) {
+            RecordPathCache recordPathCache = new RecordPathCache(GEO_PROPERTIES.size() + 1);
+            Map<PropertyDescriptor, RecordPath> recordPathMap = new HashMap<>();
             for (PropertyDescriptor descriptor : GEO_PROPERTIES) {
                 if (!context.getProperty(descriptor).isSet()) {
                     continue;
                 }
 
-                final String rawPath = context.getProperty(descriptor).evaluateAttributeExpressions(inputFlowFile).getValue();
+                final String rawPath = context.getProperty(descriptor).evaluateAttributeExpressions(input).getValue();
                 final RecordPath compiled = recordPathCache.getCompiled(rawPath);
                 recordPathMap.put(descriptor, compiled);
             }
 
-            final String rawIpPath = context.getProperty(IP_RECORD_PATH).evaluateAttributeExpressions(inputFlowFile).getValue();
+            final String rawIpPath = context.getProperty(IP_RECORD_PATH).evaluateAttributeExpressions(input).getValue();
             final RecordPath ipPath = recordPathCache.getCompiled(rawIpPath);
-            final RecordReader reader = readerFactory.createRecordReader(inputFlowFile, is, getLogger());
-            final RecordSchema schema = writerFactory.getSchema(inputFlowFile.getAttributes(), reader.getSchema());
-            final RecordSetWriter notFoundWriter = splitOutput ? writerFactory.createWriter(getLogger(), schema, osNotFound, inputFlowFile) : null;
+            final RecordReader reader = readerFactory.createRecordReader(input, is, getLogger());
+            final RecordSchema schema = writerFactory.getSchema(input.getAttributes(), reader.getSchema());
+            final RecordSetWriter notFoundWriter = splitOutput ? writerFactory.createWriter(getLogger(), schema, osNotFound, input) : null;
             RecordSetWriter writer = null;
             Record record;
             Relationship targetRelationship = REL_NOT_FOUND;
@@ -262,7 +262,7 @@ public class GeoEnrichIPRecord extends AbstractEnrichIP {
                 if (!splitOutput || wasEnriched) {
                     // Initialise the writer, applying the enriched fields to the schema
                     if (writer == null) {
-                        writer = writerFactory.createWriter(getLogger(), record.getSchema(), os, inputFlowFile);
+                        writer = writerFactory.createWriter(getLogger(), record.getSchema(), os, input);
                         writer.beginRecordSet();
                     }
 
@@ -294,7 +294,7 @@ public class GeoEnrichIPRecord extends AbstractEnrichIP {
             }
             if (!splitOutput) {
                 session.transfer(outputFlowFile, targetRelationship);
-                session.remove(inputFlowFile);
+                session.remove(input);
             } else {
                 if (notFoundCount > 0) {
                     if (writer != null) {
@@ -310,10 +310,10 @@ public class GeoEnrichIPRecord extends AbstractEnrichIP {
                     session.remove(outputFlowFile);
                 }
 
-                session.transfer(inputFlowFile, REL_ORIGINAL);
+                session.transfer(input, REL_ORIGINAL);
                 session.getProvenanceReporter().modifyContent(notFoundFlowFile);
             }
-            session.getProvenanceReporter().modifyContent(output);
+            session.getProvenanceReporter().modifyContent(outputFlowFile);
         } catch (InvalidDatabaseException | InternalError idbe) {
             // The database was likely changed out while being read, rollback and try again
             setNeedsReload(true);
@@ -390,6 +390,7 @@ public class GeoEnrichIPRecord extends AbstractEnrichIP {
 
     /**
      * Update the value of the target record field
+     *
      * @return Whether a non-null value was written to the record field
      */
     private boolean updateFieldValue(PropertyDescriptor descriptor, Map<PropertyDescriptor, RecordPath> cached, Record record,
