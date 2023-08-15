@@ -24,13 +24,8 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
-import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.*;
 import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
-import org.apache.nifi.annotation.behavior.ReadsAttribute;
-import org.apache.nifi.annotation.behavior.SideEffectFree;
-import org.apache.nifi.annotation.behavior.SupportsBatching;
-import org.apache.nifi.annotation.behavior.WritesAttribute;
-import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
@@ -43,39 +38,27 @@ import org.apache.nifi.flowfile.attributes.CoreAttributes;
 import org.apache.nifi.flowfile.attributes.FragmentAttributes;
 import org.apache.nifi.flowfile.attributes.StandardFlowFileMediaType;
 import org.apache.nifi.logging.ComponentLog;
-import org.apache.nifi.processor.AbstractProcessor;
-import org.apache.nifi.processor.ProcessContext;
-import org.apache.nifi.processor.ProcessSession;
-import org.apache.nifi.processor.ProcessorInitializationContext;
-import org.apache.nifi.processor.Relationship;
+import org.apache.nifi.processor.*;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.io.InputStreamCallback;
 import org.apache.nifi.processor.util.StandardValidators;
+import org.apache.nifi.processors.standard.merge.AttributeDecoratorUtil;
 import org.apache.nifi.processors.standard.util.FileInfo;
+import org.apache.nifi.serialization.RecordReaderFactory;
 import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.util.FlowFileUnpackager;
 import org.apache.nifi.util.FlowFileUnpackagerV1;
 import org.apache.nifi.util.FlowFileUnpackagerV2;
 import org.apache.nifi.util.FlowFileUnpackagerV3;
+import org.apache.nifi.xml.processing.ProcessingException;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 @SideEffectFree
@@ -142,6 +125,45 @@ public class UnpackContent extends AbstractProcessor {
                     PackageFormat.FLOWFILE_STREAM_FORMAT_V2.toString(), PackageFormat.FLOWFILE_TAR_FORMAT.toString())
             .defaultValue(PackageFormat.AUTO_DETECT_FORMAT.toString())
             .build();
+    public static final PropertyDescriptor READ_FLOWFILE_ATTRIBUTES = new PropertyDescriptor.Builder()
+            .name("Read FlowFile Attributes")
+            .description("If using Zip or Tar format, specifies whether to read FlowFile attributes from " +
+                    "specially suffixed files within the archive. For example, an archive entry of 001.txt must be immediately " +
+                    "followed by an entry 001.txt.attributes. The filename extension (e.g. *.attributes) depends on the " +
+                    "configured property FlowFile Attribute File Extension")
+            .required(true)
+            .allowableValues("true", "false")
+            .defaultValue("false")
+            .dependsOn(PACKAGING_FORMAT,
+                    PackageFormat.AUTO_DETECT_FORMAT.toString(),
+                    PackageFormat.TAR_FORMAT.toString(),
+                    PackageFormat.ZIP_FORMAT.toString())
+            .build();
+    public static final PropertyDescriptor FLOWFILE_ATTRIBUTE_FILE_EXTENSION = new PropertyDescriptor.Builder()
+            .name("FlowFile Attribute File Extension")
+            .description("If using Zip or Tar format and reading FlowFile attributes from files, " +
+                    "specifies the filename extension to expect when reading the FlowFile attribute file from the archive.")
+            .required(true)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .defaultValue("attributes")
+            .dependsOn(PACKAGING_FORMAT,
+                    PackageFormat.AUTO_DETECT_FORMAT.toString(),
+                    PackageFormat.TAR_FORMAT.toString(),
+                    PackageFormat.ZIP_FORMAT.toString())
+            .dependsOn(READ_FLOWFILE_ATTRIBUTES, "true")
+            .build();
+    public static final PropertyDescriptor FLOWFILE_ATTRIBUTE_RECORD_READER = new PropertyDescriptor.Builder()
+            .name("FlowFile Attribute Record Reader")
+            .description("If using Zip or Tar format and reading FlowFile attributes from files, " +
+                    "specifies the Controller Service to use for reading attributes from file.")
+            .identifiesControllerService(RecordReaderFactory.class)
+            .required(true)
+            .dependsOn(PACKAGING_FORMAT,
+                    PackageFormat.AUTO_DETECT_FORMAT.toString(),
+                    PackageFormat.TAR_FORMAT.toString(),
+                    PackageFormat.ZIP_FORMAT.toString())
+            .dependsOn(READ_FLOWFILE_ATTRIBUTES, "true")
+            .build();
 
     public static final PropertyDescriptor FILE_FILTER = new PropertyDescriptor.Builder()
             .name("File Filter")
@@ -205,6 +227,9 @@ public class UnpackContent extends AbstractProcessor {
 
         final List<PropertyDescriptor> properties = new ArrayList<>();
         properties.add(PACKAGING_FORMAT);
+        properties.add(READ_FLOWFILE_ATTRIBUTES);
+        properties.add(FLOWFILE_ATTRIBUTE_FILE_EXTENSION);
+        properties.add(FLOWFILE_ATTRIBUTE_RECORD_READER);
         properties.add(FILE_FILTER);
         properties.add(PASSWORD);
         properties.add(ALLOW_STORED_ENTRIES_WITH_DATA_DESCRIPTOR);
@@ -306,7 +331,7 @@ public class UnpackContent extends AbstractProcessor {
 
         final List<FlowFile> unpacked = new ArrayList<>();
         try {
-            unpacker.unpack(session, flowFile, unpacked);
+            unpacker.unpack(session, context, flowFile, unpacked, getLogger());
             if (unpacked.isEmpty()) {
                 logger.error("Unable to unpack {} because it does not appear to have any entries; routing to failure", flowFile);
                 session.transfer(flowFile, REL_FAILURE);
@@ -338,7 +363,7 @@ public class UnpackContent extends AbstractProcessor {
             this.fileFilter = fileFilter;
         }
 
-        abstract void unpack(ProcessSession session, FlowFile source, List<FlowFile> unpacked);
+        abstract void unpack(ProcessSession session, ProcessContext context, FlowFile source, List<FlowFile> unpacked, ComponentLog logger);
 
         protected boolean fileMatches(final ArchiveEntry entry) {
             return fileMatches(entry.getName());
@@ -355,8 +380,12 @@ public class UnpackContent extends AbstractProcessor {
         }
 
         @Override
-        public void unpack(final ProcessSession session, final FlowFile source, final List<FlowFile> unpacked) {
+        public void unpack(final ProcessSession session, final ProcessContext context, final FlowFile source, final List<FlowFile> unpacked, final ComponentLog logger) {
             final String fragmentId = UUID.randomUUID().toString();
+            final boolean readAttributes = context.getProperty(READ_FLOWFILE_ATTRIBUTES).asBoolean();
+            final String attributeFileExtension = context.getProperty(FLOWFILE_ATTRIBUTE_FILE_EXTENSION).getValue();
+            final RecordReaderFactory readerFactory = readAttributes ? context.getProperty(FLOWFILE_ATTRIBUTE_RECORD_READER).asControllerService(RecordReaderFactory.class) : null;
+
             session.read(source, inputStream -> {
                 int fragmentCount = 0;
                 try (final TarArchiveInputStream tarIn = new TarArchiveInputStream(new BufferedInputStream(inputStream))) {
@@ -390,10 +419,23 @@ public class UnpackContent extends AbstractProcessor {
                             attributes.put(FRAGMENT_ID, fragmentId);
                             attributes.put(FRAGMENT_INDEX, String.valueOf(++fragmentCount));
 
-                            unpackedFile = session.putAllAttributes(unpackedFile, attributes);
-
                             final long fileSize = tarEntry.getSize();
                             unpackedFile = session.write(unpackedFile, outputStream -> StreamUtils.copy(tarIn, outputStream, fileSize));
+
+                            // Read FlowFile attributes from the next file in the archive, overwriting existing attributes
+                            if (readAttributes) {
+                                final TarArchiveEntry nextTarEntry = tarIn.getNextTarEntry();
+                                if (!nextTarEntry.isFile()) {
+                                    throw new FileNotFoundException(String.format("Archive entry %s is not a file", nextTarEntry.getName()));
+                                }
+
+                                AttributeDecoratorUtil.validateAttributeEntryName(nextTarEntry.getName(), tarEntry.getName(), attributeFileExtension);
+                                AttributeDecoratorUtil.decorateAttributesFromFile(attributes, tarIn, nextTarEntry.getSize(), readerFactory, logger);
+                            }
+
+                            unpackedFile = session.putAllAttributes(unpackedFile, attributes);
+                        } catch (Exception e) {
+                            throw new ProcessingException("An error occurred when unpacking tar archive", e);
                         } finally {
                             unpacked.add(unpackedFile);
                         }
@@ -414,12 +456,12 @@ public class UnpackContent extends AbstractProcessor {
         }
 
         @Override
-        public void unpack(final ProcessSession session, final FlowFile source, final List<FlowFile> unpacked) {
+        public void unpack(final ProcessSession session, ProcessContext context, final FlowFile source, final List<FlowFile> unpacked, ComponentLog logger) {
             final String fragmentId = UUID.randomUUID().toString();
             if (password == null) {
-                session.read(source, new CompressedZipInputStreamCallback(fileFilter, session, source, unpacked, fragmentId, allowStoredEntriesWithDataDescriptor));
+                session.read(source, new CompressedZipInputStreamCallback(fileFilter, session, context, logger, source, unpacked, fragmentId, allowStoredEntriesWithDataDescriptor));
             } else {
-                session.read(source, new EncryptedZipInputStreamCallback(fileFilter, session, source, unpacked, fragmentId, password));
+                session.read(source, new EncryptedZipInputStreamCallback(fileFilter, session, context, logger, source, unpacked, fragmentId, password));
             }
         }
 
@@ -428,7 +470,11 @@ public class UnpackContent extends AbstractProcessor {
 
             private final Pattern fileFilter;
 
-            private final ProcessSession session;
+            protected final ProcessSession session;
+
+            protected final ProcessContext context;
+
+            protected final ComponentLog logger;
 
             private final FlowFile sourceFlowFile;
 
@@ -441,12 +487,16 @@ public class UnpackContent extends AbstractProcessor {
             private ZipInputStreamCallback(
                     final Pattern fileFilter,
                     final ProcessSession session,
+                    final ProcessContext context,
+                    final ComponentLog logger,
                     final FlowFile sourceFlowFile,
                     final List<FlowFile> unpacked,
                     final String fragmentId
             ) {
                 this.fileFilter = fileFilter;
                 this.session = session;
+                this.context = context;
+                this.logger = logger;
                 this.sourceFlowFile = sourceFlowFile;
                 this.unpacked = unpacked;
                 this.fragmentId = fragmentId;
@@ -456,12 +506,14 @@ public class UnpackContent extends AbstractProcessor {
                 return !directory && (fileFilter == null || fileFilter.matcher(fileName).find());
             }
 
-            protected void processEntry(final InputStream zipInputStream, final boolean directory, final String zipEntryName, final EncryptionMethod encryptionMethod) {
+            protected void processEntry(final InputStream zipInputStream, final boolean directory, final String zipEntryName, final EncryptionMethod encryptionMethod,
+                                        final Consumer<Map<String, String>> decorateAttributesDelegate) {
                 if (isFileEntryMatched(directory, zipEntryName)) {
                     final File file = new File(zipEntryName);
                     final String parentDirectory = (file.getParent() == null) ? PATH_SEPARATOR : file.getParent();
 
                     FlowFile unpackedFile = session.create(sourceFlowFile);
+                    unpackedFile = session.write(unpackedFile, outputStream -> StreamUtils.copy(zipInputStream, outputStream));
                     try {
                         final Map<String, String> attributes = new HashMap<>();
                         attributes.put(CoreAttributes.FILENAME.key(), file.getName());
@@ -473,8 +525,14 @@ public class UnpackContent extends AbstractProcessor {
                         attributes.put(FRAGMENT_ID, fragmentId);
                         attributes.put(FRAGMENT_INDEX, String.valueOf(++fragmentIndex));
 
+                        // If we're reading FlowFile attributes from a file, read the file and merge with existing attributes
+                        if (decorateAttributesDelegate != null) {
+                            decorateAttributesDelegate.accept(attributes);
+                        }
+
                         unpackedFile = session.putAllAttributes(unpackedFile, attributes);
-                        unpackedFile = session.write(unpackedFile, outputStream -> StreamUtils.copy(zipInputStream, outputStream));
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
                     } finally {
                         unpacked.add(unpackedFile);
                     }
@@ -489,21 +547,47 @@ public class UnpackContent extends AbstractProcessor {
             private CompressedZipInputStreamCallback(
                     final Pattern fileFilter,
                     final ProcessSession session,
+                    final ProcessContext context,
+                    final ComponentLog logger,
                     final FlowFile sourceFlowFile,
                     final List<FlowFile> unpacked,
                     final String fragmentId,
                     final boolean allowStoredEntriesWithDataDescriptor
             ) {
-                super(fileFilter, session, sourceFlowFile, unpacked, fragmentId);
+                super(fileFilter, session, context, logger, sourceFlowFile, unpacked, fragmentId);
                 this.allowStoredEntriesWithDataDescriptor = allowStoredEntriesWithDataDescriptor;
             }
 
             @Override
             public void process(final InputStream inputStream) throws IOException {
+                final boolean readAttributesFromFile = context.getProperty(READ_FLOWFILE_ATTRIBUTES).asBoolean();
+                final String attributeFileExtension = context.getProperty(FLOWFILE_ATTRIBUTE_FILE_EXTENSION).getValue();
+                final RecordReaderFactory readerFactory = readAttributesFromFile ? context.getProperty(FLOWFILE_ATTRIBUTE_RECORD_READER).asControllerService(RecordReaderFactory.class) : null;
+
                 try (final ZipArchiveInputStream zipInputStream = new ZipArchiveInputStream(new BufferedInputStream(inputStream), null, true, allowStoredEntriesWithDataDescriptor)) {
                     ZipArchiveEntry zipEntry;
                     while ((zipEntry = zipInputStream.getNextZipEntry()) != null) {
-                        processEntry(zipInputStream, zipEntry.isDirectory(), zipEntry.getName(), EncryptionMethod.NONE);
+                        final String zipEntryName = zipEntry.getName();
+
+                        // Read FlowFile attributes from the next file in the archive, merging with existing attributes
+                        if (readAttributesFromFile) {
+                            processEntry(zipInputStream, zipEntry.isDirectory(), zipEntry.getName(), EncryptionMethod.NONE, attributes -> {
+                                final ZipArchiveEntry nextZipEntry;
+                                try {
+                                    nextZipEntry = zipInputStream.getNextZipEntry();
+                                    if (nextZipEntry.isDirectory()) {
+                                        throw new FileNotFoundException(String.format("Archive entry %s is not a file", nextZipEntry.getName()));
+                                    }
+
+                                    AttributeDecoratorUtil.validateAttributeEntryName(nextZipEntry.getName(), zipEntryName, attributeFileExtension);
+                                    AttributeDecoratorUtil.decorateAttributesFromFile(attributes, zipInputStream, nextZipEntry.getSize(), readerFactory, logger);
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
+                        } else {
+                            processEntry(zipInputStream, zipEntry.isDirectory(), zipEntry.getName(), EncryptionMethod.NONE, null);
+                        }
                     }
                 }
             }
@@ -515,21 +599,46 @@ public class UnpackContent extends AbstractProcessor {
             private EncryptedZipInputStreamCallback(
                     final Pattern fileFilter,
                     final ProcessSession session,
+                    final ProcessContext context,
+                    final ComponentLog logger,
                     final FlowFile sourceFlowFile,
                     final List<FlowFile> unpacked,
                     final String fragmentId,
                     final char[] password
             ) {
-                super(fileFilter, session, sourceFlowFile, unpacked, fragmentId);
+                super(fileFilter, session, context, logger, sourceFlowFile, unpacked, fragmentId);
                 this.password = password;
             }
 
             @Override
             public void process(final InputStream inputStream) throws IOException {
+                final boolean readAttributesFromFile = context.getProperty(READ_FLOWFILE_ATTRIBUTES).asBoolean();
+                final String attributeFileExtension = context.getProperty(FLOWFILE_ATTRIBUTE_FILE_EXTENSION).getValue();
+                final RecordReaderFactory readerFactory = readAttributesFromFile ? context.getProperty(FLOWFILE_ATTRIBUTE_RECORD_READER).asControllerService(RecordReaderFactory.class) : null;
+
                 try (final ZipInputStream zipInputStream = new ZipInputStream(new BufferedInputStream(inputStream), password)) {
                     LocalFileHeader zipEntry;
                     while ((zipEntry = zipInputStream.getNextEntry()) != null) {
-                        processEntry(zipInputStream, zipEntry.isDirectory(), zipEntry.getFileName(), zipEntry.getEncryptionMethod());
+                        final String zipEntryName = zipEntry.getFileName();
+
+                        // Read FlowFile attributes from the next file in the archive, overwriting existing attributes
+                        if (readAttributesFromFile) {
+                            processEntry(zipInputStream, zipEntry.isDirectory(), zipEntryName, zipEntry.getEncryptionMethod(), attributes -> {
+                                try {
+                                    final LocalFileHeader nextZipEntry = zipInputStream.getNextEntry();
+                                    if (nextZipEntry.isDirectory()) {
+                                        throw new FileNotFoundException(String.format("Archive entry %s is not a file", nextZipEntry.getFileName()));
+                                    }
+
+                                    AttributeDecoratorUtil.validateAttributeEntryName(nextZipEntry.getFileName(), zipEntryName, attributeFileExtension);
+                                    AttributeDecoratorUtil.decorateAttributesFromFile(attributes, zipInputStream, nextZipEntry.getCompressedSize(), readerFactory, logger);
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
+                        } else {
+                            processEntry(zipInputStream, zipEntry.isDirectory(), zipEntryName, zipEntry.getEncryptionMethod(), null);
+                        }
                     }
                 }
             }
@@ -545,7 +654,7 @@ public class UnpackContent extends AbstractProcessor {
         }
 
         @Override
-        public void unpack(final ProcessSession session, final FlowFile source, final List<FlowFile> unpacked) {
+        public void unpack(final ProcessSession session, ProcessContext context, final FlowFile source, final List<FlowFile> unpacked, ComponentLog logger) {
             session.read(source, inputStream -> {
                 try (final InputStream in = new BufferedInputStream(inputStream)) {
                     while (unpackager.hasMoreData()) {

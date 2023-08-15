@@ -28,16 +28,8 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.apache.commons.compress.archivers.tar.TarConstants;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.*;
 import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
-import org.apache.nifi.annotation.behavior.ReadsAttribute;
-import org.apache.nifi.annotation.behavior.ReadsAttributes;
-import org.apache.nifi.annotation.behavior.SideEffectFree;
-import org.apache.nifi.annotation.behavior.SystemResource;
-import org.apache.nifi.annotation.behavior.SystemResourceConsideration;
-import org.apache.nifi.annotation.behavior.TriggerWhenEmpty;
-import org.apache.nifi.annotation.behavior.WritesAttribute;
-import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
 import org.apache.nifi.annotation.documentation.Tags;
@@ -63,8 +55,14 @@ import org.apache.nifi.processor.util.bin.Bin;
 import org.apache.nifi.processor.util.bin.BinFiles;
 import org.apache.nifi.processor.util.bin.BinManager;
 import org.apache.nifi.processor.util.bin.BinProcessingResult;
+import org.apache.nifi.processors.standard.merge.AttributeDecoratorUtil;
 import org.apache.nifi.processors.standard.merge.AttributeStrategy;
 import org.apache.nifi.processors.standard.merge.AttributeStrategyUtil;
+import org.apache.nifi.schema.access.SchemaNotFoundException;
+import org.apache.nifi.serialization.RecordSetWriter;
+import org.apache.nifi.serialization.RecordSetWriterFactory;
+import org.apache.nifi.serialization.record.MapRecord;
+import org.apache.nifi.serialization.record.RecordSchema;
 import org.apache.nifi.stream.io.NonCloseableOutputStream;
 import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.util.FlowFilePackager;
@@ -72,29 +70,13 @@ import org.apache.nifi.util.FlowFilePackagerV1;
 import org.apache.nifi.util.FlowFilePackagerV2;
 import org.apache.nifi.util.FlowFilePackagerV3;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.OptionalLong;
-import java.util.Set;
-import java.util.TreeMap;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -349,6 +331,33 @@ public class MergeContent extends BinFiles {
             .defaultValue("${file.lastModifiedTime}")
             .dependsOn(MERGE_FORMAT, MERGE_FORMAT_TAR)
             .build();
+    public static final PropertyDescriptor WRITE_FLOWFILE_ATTRIBUTES = new PropertyDescriptor.Builder()
+            .name("Write FlowFile Attributes")
+            .description("If using the Zip or Tar Merge Format, specifies whether to write FlowFile attributes as separate files to the archive.")
+            .required(true)
+            .allowableValues("true", "false")
+            .defaultValue("false")
+            .dependsOn(MERGE_FORMAT, MERGE_FORMAT_TAR, MERGE_FORMAT_ZIP)
+            .build();
+    public static final PropertyDescriptor FLOWFILE_ATTRIBUTE_FILE_EXTENSION = new PropertyDescriptor.Builder()
+            .name("FlowFile Attribute File Extension")
+            .description("If using the Zip or Tar Merge Format and writing FlowFile attributes as files, " +
+                    "specifies the filename extension to append to the original FlowFile filename when creating the FlowFile attribute file.")
+            .required(true)
+            .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+            .defaultValue("attributes")
+            .dependsOn(MERGE_FORMAT, MERGE_FORMAT_TAR, MERGE_FORMAT_ZIP)
+            .dependsOn(WRITE_FLOWFILE_ATTRIBUTES, "true")
+            .build();
+    public static final PropertyDescriptor FLOWFILE_ATTRIBUTE_RECORD_WRITER = new PropertyDescriptor.Builder()
+            .name("FlowFile Attribute Record Writer")
+            .description("If using the Zip or Tar Merge Format and writing FlowFile attributes as files, " +
+                    "specifies the Controller Service to use for writing attributes to file.")
+            .identifiesControllerService(RecordSetWriterFactory.class)
+            .required(true)
+            .dependsOn(MERGE_FORMAT, MERGE_FORMAT_TAR, MERGE_FORMAT_ZIP)
+            .dependsOn(WRITE_FLOWFILE_ATTRIBUTES, "true")
+            .build();
 
     public static final Relationship REL_MERGED = new Relationship.Builder().name("merged").description("The FlowFile containing the merged content").build();
 
@@ -369,6 +378,9 @@ public class MergeContent extends BinFiles {
         descriptors.add(MERGE_STRATEGY);
         descriptors.add(MERGE_FORMAT);
         descriptors.add(AttributeStrategyUtil.ATTRIBUTE_STRATEGY);
+        descriptors.add(WRITE_FLOWFILE_ATTRIBUTES);
+        descriptors.add(FLOWFILE_ATTRIBUTE_FILE_EXTENSION);
+        descriptors.add(FLOWFILE_ATTRIBUTE_RECORD_WRITER);
         descriptors.add(CORRELATION_ATTRIBUTE_NAME);
         descriptors.add(METADATA_STRATEGY);
         descriptors.add(addBinPackingDependency(MIN_ENTRIES));
@@ -606,6 +618,36 @@ public class MergeContent extends BinFiles {
         }
     }
 
+    /**
+     * Writes all FlowFile attributes to a byte array using the configured RecordWriter
+     */
+    private byte[] writeAttributes(final RecordSetWriterFactory writerFactory, final FlowFile flowFile) throws IOException, SchemaNotFoundException {
+        final Map<String, String> attributes = flowFile.getAttributes();
+        final RecordSchema readSchema = AttributeDecoratorUtil.ATTRIBUTE_RECORD_SCHEMA;
+        final RecordSchema writeSchema = writerFactory.getSchema(attributes, readSchema);
+        final ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        final BufferedOutputStream bufferedOutputStream = new BufferedOutputStream(outputStream);
+
+        try (final RecordSetWriter attributeWriter = writerFactory.createWriter(getLogger(), writeSchema, bufferedOutputStream, attributes)) {
+            attributeWriter.beginRecordSet();
+
+            attributes.forEach((attributeName, attributeValue) -> {
+                Map<String, Object> attributeMap = new HashMap<>();
+                attributeMap.put(AttributeDecoratorUtil.NAME_FIELD, attributeName);
+                attributeMap.put(AttributeDecoratorUtil.VALUE_FIELD, attributeValue);
+                try {
+                    attributeWriter.write(new MapRecord(readSchema, attributeMap));
+                } catch (IOException e) {
+                    throw new ProcessException("Failed to write FlowFile attribute to file", e);
+                }
+            });
+
+            attributeWriter.finishRecordSet();
+        }
+
+        return outputStream.toByteArray();
+    }
+
     private class BinaryConcatenationMerge implements MergeBin {
 
         private String mimeType = "application/octet-stream";
@@ -760,6 +802,10 @@ public class MergeContent extends BinFiles {
             final boolean keepPath = context.getProperty(KEEP_PATH).asBoolean();
             FlowFile bundle = session.create(); // we don't pass the parents to the #create method because the parents belong to different sessions
 
+            final boolean writeAttributes = context.getProperty(WRITE_FLOWFILE_ATTRIBUTES).asBoolean();
+            final String attributeFileExtension = context.getProperty(FLOWFILE_ATTRIBUTE_FILE_EXTENSION).getValue();
+            final RecordSetWriterFactory attributeWriterFactory = writeAttributes ? context.getProperty(FLOWFILE_ATTRIBUTE_RECORD_WRITER).asControllerService(RecordSetWriterFactory.class) : null;
+
             try {
                 bundle = session.putAttribute(bundle, CoreAttributes.FILENAME.key(), createFilename(contents) + ".tar");
                 bundle = session.write(bundle, new OutputStreamCallback() {
@@ -777,34 +823,32 @@ public class MergeContent extends BinFiles {
                                 final String path = keepPath ? getPath(flowFile) : "";
                                 final String entryName = path + flowFile.getAttribute(CoreAttributes.FILENAME.key());
 
+                                // Add the FlowFile to the archive
                                 final TarArchiveEntry tarEntry = new TarArchiveEntry(entryName);
                                 tarEntry.setSize(flowFile.getSize());
-                                final String permissionsVal = flowFile.getAttribute(TAR_PERMISSIONS_ATTRIBUTE);
-                                if (permissionsVal != null) {
-                                    try {
-                                        tarEntry.setMode(Integer.parseInt(permissionsVal));
-                                    } catch (final Exception e) {
-                                        getLogger().debug("Attribute {} of {} is set to {}; expected 3 digits between 0-7, so ignoring",
-                                            new Object[] {TAR_PERMISSIONS_ATTRIBUTE, flowFile, permissionsVal});
-                                    }
-                                }
-
-                                final String modTime = context.getProperty(TAR_MODIFIED_TIME)
-                                    .evaluateAttributeExpressions(flowFile).getValue();
-                                if (StringUtils.isNotBlank(modTime)) {
-                                    try {
-                                        tarEntry.setModTime(Instant.parse(modTime).toEpochMilli());
-                                    } catch (final Exception e) {
-                                        getLogger().debug("Attribute {} of {} is set to {}; expected ISO8601 format, so ignoring",
-                                            new Object[] {TAR_MODIFIED_TIME, flowFile, modTime});
-                                    }
-                                }
-
+                                setPermissions(flowFile, tarEntry);
+                                setModificationTime(flowFile, tarEntry, context);
                                 out.putArchiveEntry(tarEntry);
-
                                 bin.getSession().exportTo(flowFile, out);
                                 out.closeArchiveEntry();
+
+                                // Create a file entry containing all FlowFile attributes
+                                if (writeAttributes) {
+                                    final byte[] attributeData = writeAttributes(attributeWriterFactory, flowFile);
+                                    final String attributeFileEntryName = AttributeDecoratorUtil.getAttributeEntryName(entryName, attributeFileExtension);
+                                    final TarArchiveEntry tarAttributeFileEntry = new TarArchiveEntry(attributeFileEntryName);
+
+                                    setPermissions(flowFile, tarAttributeFileEntry);
+                                    setModificationTime(flowFile, tarAttributeFileEntry, context);
+                                    tarAttributeFileEntry.setSize(attributeData.length);
+
+                                    out.putArchiveEntry(tarAttributeFileEntry);
+                                    out.write(attributeData);
+                                    out.closeArchiveEntry();
+                                }
                             }
+                        } catch (SchemaNotFoundException e) {
+                            throw new ProcessException("Could not create attribute file schema", e);
                         }
                     }
                 });
@@ -815,6 +859,31 @@ public class MergeContent extends BinFiles {
 
             bin.getSession().getProvenanceReporter().join(contents, bundle);
             return bundle;
+        }
+
+        private void setPermissions(final FlowFile flowFile, final TarArchiveEntry tarEntry) {
+            final String permissionsVal = flowFile.getAttribute(TAR_PERMISSIONS_ATTRIBUTE);
+            if (permissionsVal != null) {
+                try {
+                    tarEntry.setMode(Integer.parseInt(permissionsVal));
+                } catch (final Exception e) {
+                    getLogger().debug("Attribute {} of {} is set to {}; expected 3 digits between 0-7, so ignoring",
+                            new Object[] {TAR_PERMISSIONS_ATTRIBUTE, flowFile, permissionsVal});
+                }
+            }
+        }
+
+        private void setModificationTime(FlowFile flowFile, TarArchiveEntry tarEntry, ProcessContext context) {
+            final String modTime = context.getProperty(TAR_MODIFIED_TIME)
+                    .evaluateAttributeExpressions(flowFile).getValue();
+            if (StringUtils.isNotBlank(modTime)) {
+                try {
+                    tarEntry.setModTime(Instant.parse(modTime).toEpochMilli());
+                } catch (final Exception e) {
+                    getLogger().debug("Attribute {} of {} is set to {}; expected ISO8601 format, so ignoring",
+                            new Object[] {TAR_MODIFIED_TIME, flowFile, modTime});
+                }
+            }
         }
 
         private long getMaxEntrySize(final List<FlowFile> contents) {
@@ -910,6 +979,9 @@ public class MergeContent extends BinFiles {
         @Override
         public FlowFile merge(final Bin bin, final ProcessContext context) {
             final boolean keepPath = context.getProperty(KEEP_PATH).asBoolean();
+            final boolean writeAttributes = context.getProperty(WRITE_FLOWFILE_ATTRIBUTES).asBoolean();
+            final String attributeFileExtension = context.getProperty(FLOWFILE_ATTRIBUTE_FILE_EXTENSION).getValue();
+            final RecordSetWriterFactory attributeWriterFactory = writeAttributes ? context.getProperty(FLOWFILE_ATTRIBUTE_RECORD_WRITER).asControllerService(RecordSetWriterFactory.class) : null;
 
             final ProcessSession session = bin.getSession();
             final List<FlowFile> contents = bin.getContents();
@@ -932,11 +1004,24 @@ public class MergeContent extends BinFiles {
                                 zipEntry.setSize(flowFile.getSize());
                                 try {
                                     out.putNextEntry(zipEntry);
-
                                     bin.getSession().exportTo(flowFile, out);
                                     out.closeEntry();
+
+                                    // Create a file entry containing all FlowFile attributes
+                                    if (writeAttributes) {
+                                        final byte[] attributeData = writeAttributes(attributeWriterFactory, flowFile);
+                                        final String attributeFileEntryName = AttributeDecoratorUtil.getAttributeEntryName(entryName, attributeFileExtension);
+                                        final ZipEntry zipAttributeFileEntry = new ZipEntry(attributeFileEntryName);
+
+                                        zipAttributeFileEntry.setSize(attributeData.length);
+
+                                        out.putNextEntry(zipAttributeFileEntry);
+                                        out.write(attributeData);
+                                        out.closeEntry();
+                                    }
+
                                     unmerged.remove(flowFile);
-                                } catch (ZipException e) {
+                                } catch (ZipException | SchemaNotFoundException e) {
                                     getLogger().error("Encountered exception merging {}", new Object[] {flowFile}, e);
                                 }
                             }
@@ -1097,8 +1182,6 @@ public class MergeContent extends BinFiles {
             return unmerged;
         }
     }
-
-
 
     private static class FragmentComparator implements Comparator<FlowFile> {
 
